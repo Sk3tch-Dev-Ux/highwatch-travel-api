@@ -1,0 +1,103 @@
+# Travel API reference
+
+Two kinds of caller: the **@Highwatch-Travel mod** on each game server, and the **network's owner**.
+
+## The mod: `/travel/...`
+
+Every route is `POST` with JSON, and the server key is the **first field** of the body:
+`{"apiKey":"hwt_...", ...}`. DayZ's `RestApi` cannot set headers, so the key cannot go in one. The API reads it
+from the body's first 512 bytes.
+
+`RestCallback.OnError` in DayZ only receives a number, never a body. So a refusal the player should see answers
+**HTTP 200** with `{ "ok": false, "code": "...", "error": "..." }`. A bad key (401), too many bad keys from one
+address (429) and an oversized body (413) keep their real status.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /travel/beat` | players `[{steamId, name}]`, maxPlayers, world, terje, version | the network, its servers, everyone online, its routes |
+| `POST /travel/inbox` | after, ledgerAfter (-1 asks for the whole ledger), wait (ms, at most 20000), seen (transfer ids already held) | arrivals, returns, queue (chat, send), ledger changes, cursors |
+| `POST /travel/ledger` | steamId | where the character lives: state, home, transfer |
+| `POST /travel/quote` | steamId | seconds left on each route's cooldown from this server |
+| `POST /travel/home` | steamId, name | claims a never-seen character for this server (or `startServer`) |
+| `POST /travel/chat` | steamId, name, text | queues the line for every other server in the network |
+| `POST /travel/transfers` | steamId, name, to, route (optional) | reserves a trip: transferId, partChars, partsMax |
+| `POST /travel/transfers/:id/part` | n, data | stores one part of the snapshot |
+| `POST /travel/transfers/:id/commit` | parts, length (UTF-8 bytes) | the snapshot is safe: sha256, expiresAt |
+| `POST /travel/transfers/:id/cancel` | | gives up a reservation |
+| `POST /travel/transfers/:id/reclaim` | | after the transit time: the source's own download path |
+| `POST /travel/transfers/:id/land` | length, as (`return` for the source), held (classes not built) | **the one claim** |
+| `GET /travel/snapshot/:id/:token` | | the snapshot text. The token is one-time per side; no key in the URL. |
+
+Refusal codes: `notMember`, `notHome`, `transit`, `held`, `offline`, `closed`, `full`, `terje`, `lapsed`,
+`parts`, `length`, `claimed`, `notExpired`, `startServer`, `unknownServer`, `unknownRoute`, `routeClosed`,
+`cooldown`, `snapshot`.
+
+### Timing the mod relies on
+
+| | |
+|---|---|
+| A reservation not committed in time lapses | 5 minutes |
+| A committed trip waits for the destination | 15 minutes; after that the source may take the character back |
+| A server whose last beat is older than this is offline | 90 seconds |
+| An empty inbox is held at most | 20 seconds (the mod asks for 8: DayZ's RestApi times reads out at 10) |
+| Queued chat and sends are kept | 1 hour |
+
+## The owner: `/v1/...`
+
+Every route needs `Authorization: Bearer <TRAVEL_ADMIN_TOKEN>`. `X-Travel-Staff: <name>` puts a name on holds and
+sends in the ledger. Bodies are JSON. Ids are lower-case hex: servers and networks 16 characters, routes 8,
+characters are Steam64 ids.
+
+| Route | Does |
+|---|---|
+| `GET /v1/servers` | every server (never its key) |
+| `POST /v1/servers` `{name}` | adds a server. The answer holds its key, **shown once**. |
+| `POST /v1/servers/:id/rotate` | a new key; the old one stops working at once |
+| `DELETE /v1/servers/:id` | only when it is in no network |
+| `GET /v1/networks` | every network with its servers, routes and character counts |
+| `POST /v1/networks` `{name}` | creates a network |
+| `GET /v1/networks/:id` | one network |
+| `POST /v1/networks/:id` `{name?, startServer?}` | renames it, or names the server new characters must start on (`""` for any) |
+| `POST /v1/networks/:id/members` `{server, address, port, label?, open?}` | adds a server, or changes it. `address` and `port` are what players connect to. `open: false` closes it to arrivals. |
+| `DELETE /v1/networks/:id/members/:server` | removes it, unless a trip is on its way to or from it |
+| `GET /v1/networks/:id/characters?q=&limit=` | characters, newest change first |
+| `GET /v1/networks/:id/characters/:steam64` | one character's ledger, trips and held items |
+| `POST /v1/networks/:id/characters/:steam64` `{state: "held"\|"home", home?}` | holds it, releases it, or moves its home (never while travelling) |
+| `POST /v1/networks/:id/send` `{steamId, to}` | a staff send: the home server runs the trip, with no route rules |
+| `POST /v1/networks/:id/routes` `{...route}` | creates a route, or updates it when the body has its `id` |
+| `DELETE /v1/networks/:id/routes/:route` | removes it |
+
+### A route
+
+```json
+{
+  "name": "Ferry to Livonia",
+  "code": "FL",
+  "from": "<chernarus server id>",
+  "to": "<livonia server id>",
+  "terminal": { "x": 12989, "z": 10244, "radius": 60, "label": "Berezino station" },
+  "landing": { "x": 1858, "z": 7330, "radius": 40, "label": "Topolin" },
+  "cost": [ { "type": "BandageDressing", "count": 1 } ],
+  "maxWeightKg": 40,
+  "hours": "06-22",
+  "cooldownMin": 30,
+  "waitSeconds": 10,
+  "enabled": true
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `code` | 2 to 4 letters or digits on the departures board. Optional. |
+| `terminal` | Where it leaves from. Leave it out, or radius 0, for anywhere. |
+| `landing` | Where it arrives. Leave it out for the destination's own landing points. |
+| `cost` | Up to 8 item classes. An item that inherits the class counts. Count is items, not quantity. |
+| `maxWeightKg` | What the player may carry. 0 for no cap. |
+| `hours` | In-game hours, `"08-20"` or overnight `"22-04"`. Empty for always. |
+| `cooldownMin` | Minutes since the character's last departure on any trip. |
+| `waitSeconds` | A frozen countdown before the trip, 0 to 120. |
+
+## Health
+
+`GET /healthz` answers `{status, version}` while the process runs. `GET /readyz` also pings MongoDB and answers 503
+when it cannot.

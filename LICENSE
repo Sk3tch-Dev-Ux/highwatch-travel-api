@@ -1,0 +1,37 @@
+Highwatch Travel API Source-Available License
+Copyright (c) 2026 Highwatch. All rights reserved.
+
+This software (the Highwatch Travel API, its command-line tool and their
+documentation) is published in source form so that server owners can run it
+themselves and read what runs on their servers. It is not open source.
+
+You may:
+1. Run this software yourself, on machines you own or rent, as the Travel API
+   for a network of DayZ servers that you own or operate, with the Highwatch
+   Travel mod.
+2. Read and modify it for that use.
+3. Keep private copies and backups, and fork it on GitHub as GitHub's terms of
+   service allow, to keep your changes for your own network.
+
+You may not:
+1. Redistribute this software or any part of it, modified or not, in source
+   or packed form (including as an archive, an installer or a container
+   image), except a fork on GitHub as allowed above, or as Highwatch itself
+   distributes it.
+2. Offer it, or a service built on it, to other server owners: no hosting it
+   for networks you do not own or operate, no reselling access to it.
+3. Use it, or any part of it, with a mod other than Highwatch Travel, or to
+   build a competing product or service.
+4. Remove or alter this notice or the headers that refer to it.
+5. Sell, sublicense, or lease it.
+
+MongoDB, the Node.js MongoDB driver and Node.js are separate software under
+their own licences. This licence does not cover them.
+
+The software is provided as is, without warranty of any kind, express or
+implied, including fitness for a particular purpose. Highwatch is not liable
+for any damage arising from its use, including lost or duplicated characters.
+Running it, and backing up its database, is your decision and your
+responsibility.
+
+Questions and permissions: the Highwatch Discord, https://discord.gg/9ug8Yv4kg8

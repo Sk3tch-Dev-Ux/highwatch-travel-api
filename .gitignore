@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+.DS_Store
+# mongodump output, if you back up into the repo folder
+dump/

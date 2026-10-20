@@ -1,0 +1,22 @@
+{
+  "name": "highwatch-travel-api",
+  "version": "1.0.0",
+  "description": "The Highwatch Travel API: one DayZ character across a network of servers. Self-hosted, on MongoDB.",
+  "private": true,
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "bin": {
+    "travel-admin": "bin/travel-admin.mjs"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.mjs",
+    "admin": "node --env-file-if-exists=.env bin/travel-admin.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "mongodb": "^7.7.0"
+  }
+}

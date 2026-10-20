@@ -1,0 +1,29 @@
+# MongoDB and the Travel API together (docs/mongodb-setup.md, "Docker"). Put MONGO_ROOT_PASSWORD, TRAVEL_DB_PASSWORD
+# and TRAVEL_ADMIN_TOKEN in .env next to this file. MongoDB is published on no host port: only the API reaches it.
+# The API is published on 127.0.0.1 only; put your HTTPS reverse proxy in front of it (README).
+services:
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD in .env}
+    volumes:
+      - travel-mongo:/data/db
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      TRAVEL_MONGO_URL: mongodb://travel:${TRAVEL_DB_PASSWORD:?Set TRAVEL_DB_PASSWORD in .env}@mongo:27017/highwatch_travel?authSource=highwatch_travel
+      TRAVEL_ADMIN_TOKEN: ${TRAVEL_ADMIN_TOKEN:?Set TRAVEL_ADMIN_TOKEN in .env}
+      TRAVEL_HOST: 0.0.0.0
+      TRAVEL_PORT: "6070"
+      TRAVEL_TRUST_PROXY: ${TRAVEL_TRUST_PROXY:-0}
+    ports:
+      - "127.0.0.1:6070:6070"
+
+volumes:
+  travel-mongo:
