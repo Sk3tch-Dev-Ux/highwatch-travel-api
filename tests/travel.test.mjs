@@ -233,3 +233,28 @@ test('route codes and zone labels reach 0.3.0 mods only, and the quote gives eac
   assert.equal((await f.mod(a.key, '/travel/quote', { steamId: GHOST })).body.routes[0].cooldownLeftSec, 20 * 60);
   assert.equal((await f.mod(a.key, '/travel/quote', { steamId: 'nope' })).body.ok, false, 'a bad Steam64 is refused the way the mod reads refusals');
 });
+
+test('money fares: validated, held back from mods older than 0.5.0, and refused to them on reserve', async t => {
+  const f = await fixture(t);
+  const { id, a, b } = await network(f);
+  assert.equal((await f.staff('POST', `/v1/networks/${id}/routes`, { name: 'Bad', from: a.id, to: b.id, money: -5 })).status, 400);
+  assert.equal((await f.staff('POST', `/v1/networks/${id}/routes`, { name: 'Bad', from: a.id, to: b.id, money: 2.5 })).status, 400);
+  assert.equal((await f.staff('POST', `/v1/networks/${id}/routes`, { name: 'Bad', from: a.id, to: b.id, money: 10000001 })).status, 400);
+  const saved = await f.staff('POST', `/v1/networks/${id}/routes`, { name: 'Paid', from: a.id, to: b.id, money: 250, moneyFromAtm: true });
+  const paid = saved.body.routes[0];
+  assert.equal(paid.money, 250); assert.equal(paid.moneyFromAtm, true);
+  const free = (await f.staff('POST', `/v1/networks/${id}/routes`, { name: 'Free', from: a.id, to: b.id, moneyFromAtm: true })).body.routes.find(r => r.name === 'Free');
+  assert.equal(free.money, 0); assert.equal(free.moneyFromAtm, false, 'no bank top-up on a route with no fare');
+
+  // A 0.4.0 mod reads routes into classes without the money keys, and cannot charge a fare: it never sees them and
+  // reserve refuses the route, so a money route never runs free.
+  const old = (await f.mod(a.key, '/travel/beat', { terje: 'skills:v1', version: '0.4.0' })).body.routes.find(r => r.name === 'Paid');
+  assert.equal('money' in old, false); assert.equal('moneyFromAtm' in old, false);
+  const refused = await f.mod(a.key, '/travel/transfers', { steamId: GHOST, name: 'Ghost', to: b.id, route: paid.id });
+  assert.equal(refused.body.code, 'upgrade');
+  assert.equal((await f.mod(a.key, '/travel/transfers', { steamId: ROOK, name: 'Rook', to: b.id, route: free.id })).body.ok, true, 'a free route still runs on 0.4.0');
+
+  const now = (await f.mod(a.key, '/travel/beat', { terje: 'skills:v1', version: '0.5.0' })).body.routes.find(r => r.name === 'Paid');
+  assert.equal(now.money, 250); assert.equal(now.moneyFromAtm, true);
+  assert.equal((await f.mod(a.key, '/travel/transfers', { steamId: GHOST, name: 'Ghost', to: b.id, route: paid.id })).body.ok, true);
+});

@@ -43,6 +43,9 @@ const HOURS = /^(\d{1,2})-(\d{1,2})$/;
 const ROUTE_CODE = /^[A-Z0-9]{2,4}$/;
 // Mods before 0.3.0 read routes and landing zones into classes without `code` and `label`, so they never get them.
 const LABELS_FROM = [0, 3, 0];
+// Mods from 0.5.0 charge a route's money fare (Expansion Market) and carry the ATM balance.
+const MONEY_FROM = [0, 5, 0];
+const MONEY_MAX = 10000000;
 export const ROUTES_MAX = 64;
 const HELD_MAX = 200;
 const LIVE = ['reserved', 'committed'];
@@ -145,15 +148,21 @@ export class TravelStore {
     const hm = HOURS.exec(hours);
     if (hours && (!hm || Number(hm[1]) > 23 || Number(hm[2]) > 24)) throw failure(400, 'Hours are "08-20" in in-game time, or empty for always.');
     const int = (v, min, max, what) => { const n = v === undefined || v === null || v === '' ? 0 : Number(v); if (!Number.isInteger(n) || n < min || n > max) throw failure(400, `Invalid ${what}.`); return n; };
-    return { id, name, code, from, to, terminal: zone(p?.terminal, 'terminal'), landing: zone(p?.landing, 'landing'), cost, maxWeightKg: int(p?.maxWeightKg, 0, 1000, 'weight cap'), hours, cooldownMin: int(p?.cooldownMin, 0, 10080, 'cooldown'), waitSeconds: int(p?.waitSeconds, 0, 120, 'wait'), enabled: p?.enabled !== false };
+    // A fare in Expansion Market money, in the value its traders use; moneyFromAtm lets the bank pay what the player
+    // does not carry.
+    const money = int(p?.money, 0, MONEY_MAX, `money fare: a whole amount from 0 to ${MONEY_MAX}`);
+    return { id, name, code, from, to, terminal: zone(p?.terminal, 'terminal'), landing: zone(p?.landing, 'landing'), cost, money, moneyFromAtm: money > 0 && p?.moneyFromAtm === true, maxWeightKg: int(p?.maxWeightKg, 0, 1000, 'weight cap'), hours, cooldownMin: int(p?.cooldownMin, 0, 10080, 'cooldown'), waitSeconds: int(p?.waitSeconds, 0, 120, 'wait'), enabled: p?.enabled !== false };
   }
   // No zone goes out as radius 0, never null: the mod reads routes into fixed classes. With labels false (a mod
   // older than 0.3.0) the route carries no `code` and its zones no `label`, the keys that mod has no member for.
-  async routes(networkId, labels = true) {
+  // With money false (older than 0.5.0) it carries no `money` or `moneyFromAtm`; such a mod cannot take a money route
+  // (reserve refuses it), so it never runs one for free.
+  async routes(networkId, labels = true, money = true) {
     return (await this.c.routes.find({ network: networkId }).sort({ createdAt: 1, _id: 1 }).toArray()).map(d => {
-      const { code = '', ...rest } = d.body;
+      const { code = '', money: fare = 0, moneyFromAtm = false, ...rest } = d.body;
       const out = { ...rest, terminal: this.zoneOut(d.body.terminal, labels), landing: this.zoneOut(d.body.landing, labels) };
       if (labels) out.code = code;
+      if (money) { out.money = fare; out.moneyFromAtm = moneyFromAtm; }
       return out;
     });
   }
@@ -164,6 +173,7 @@ export class TravelStore {
   }
   // Whether a member server's mod reads route codes and zone labels (its last beat said 0.3.0 or later).
   async readsLabels(serverId) { const m = await this.c.members.findOne({ _id: serverId }); return atLeast(m?.beat?.version, LABELS_FROM); }
+  async readsMoney(serverId) { const m = await this.c.members.findOne({ _id: serverId }); return atLeast(m?.beat?.version, MONEY_FROM); }
   async route(networkId, id) { const r = await this.c.routes.findOne({ _id: id, network: networkId }); return r ? r.body : null; }
 
   // --- helpers ---------------------------------------------------------------------------------------
@@ -238,7 +248,7 @@ export class TravelStore {
       if (!this.online(m)) continue;
       for (const pl of m.beat?.players ?? []) roster.push({ steamId: pl.steamId, name: pl.name, server: m._id });
     }
-    return { network: { id: n._id, name: n.name, settings: n.settings ?? {} }, servers, players: roster, routes: await this.routes(networkId, self === '' || await this.readsLabels(self)) };
+    return { network: { id: n._id, name: n.name, settings: n.settings ?? {} }, servers, players: roster, routes: await this.routes(networkId, self === '' || await this.readsLabels(self), self === '' || await this.readsMoney(self)) };
   }
 
   // The inbox: arrivals for this server, queued messages after its cursor and ledger changes after its ledger
@@ -354,6 +364,7 @@ export class TravelStore {
       const r = ROUTE_ID.test(str(p.route)) ? await this.route(m.network, p.route) : null;
       if (!r || r.from !== server.id || r.to !== p.to) throw failure(404, 'That route does not run from here to there.', 'unknownRoute');
       if (!r.enabled) throw failure(409, 'That route is closed.', 'routeClosed');
+      if (r.money > 0 && !atLeast(m.beat?.version, MONEY_FROM)) throw failure(409, 'This route charges money, which needs Highwatch Travel 0.5.0 or later on this server.', 'upgrade');
       if (r.cooldownMin) {
         const left = await this.cooldownLeft(m.network, p.steamId, r);
         if (left > 0) throw failure(409, `You can travel again in ${Math.ceil(left / 60000)} minutes.`, 'cooldown');
