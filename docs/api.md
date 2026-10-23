@@ -30,7 +30,7 @@ address (429) and an oversized body (413) keep their real status.
 
 Refusal codes: `notMember`, `notHome`, `transit`, `held`, `offline`, `closed`, `full`, `terje`, `lapsed`,
 `parts`, `length`, `claimed`, `notExpired`, `startServer`, `unknownServer`, `unknownRoute`, `routeClosed`,
-`cooldown`, `snapshot`.
+`cooldown`, `snapshot`, `upgrade`.
 
 ### Timing the mod relies on
 
@@ -78,6 +78,8 @@ characters are Steam64 ids.
   "terminal": { "x": 12989, "z": 10244, "radius": 60, "label": "Berezino station" },
   "landing": { "x": 1858, "z": 7330, "radius": 40, "label": "Topolin" },
   "cost": [ { "type": "BandageDressing", "count": 1 } ],
+  "money": 250,
+  "moneyFromAtm": false,
   "maxWeightKg": 40,
   "hours": "06-22",
   "cooldownMin": 30,
@@ -92,6 +94,8 @@ characters are Steam64 ids.
 | `terminal` | Where it leaves from. Leave it out, or radius 0, for anywhere. |
 | `landing` | Where it arrives. Leave it out for the destination's own landing points. |
 | `cost` | Up to 8 item classes. An item that inherits the class counts. Count is items, not quantity. |
+| `money` | A fare in Expansion Market money, in the value its traders use, 0 to 10,000,000. 0 for none. Charged from the money the player carries, with change. Needs Expansion Market and Highwatch Travel 0.5.0 on the source server: an older mod never sees the field and is refused the route (`upgrade`). |
+| `moneyFromAtm` | With a fare, the player's Expansion ATM balance pays what they do not carry. Default false. |
 | `maxWeightKg` | What the player may carry. 0 for no cap. |
 | `hours` | In-game hours, `"08-20"` or overnight `"22-04"`. Empty for always. |
 | `cooldownMin` | Minutes since the character's last departure on any trip. |
