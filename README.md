@@ -32,6 +32,10 @@ header; the protocol is in [docs/api.md](docs/api.md).
 
 ## Install
 
+**On Windows**, one script does all of this, including MongoDB, its users, `.env` and starting at boot:
+[scripts/windows/README.md](scripts/windows/README.md). Endfall's go-live checklist, from a cold start to the first
+trip, is [docs/endfall-install-plan.md](docs/endfall-install-plan.md). By hand, on any system:
+
 1. **Set up MongoDB** with its two users and authentication on: [docs/mongodb-setup.md](docs/mongodb-setup.md).
    Keep the travel user's connection string.
 
@@ -49,7 +53,7 @@ header; the protocol is in [docs/api.md](docs/api.md).
    - `TRAVEL_MONGO_URL`: the travel user's connection string from step 1;
    - `TRAVEL_ADMIN_TOKEN`: `npm run admin -- token` prints one. It is the password to the owner API: keep it secret.
 
-4. **Start it:** `npm start`. It prints `Highwatch Travel API 1.0.0 listening on 127.0.0.1:6070`. Check
+4. **Start it:** `npm start`. It prints `Highwatch Travel API 1.4.0 listening on 127.0.0.1:6070`. Check
    http://127.0.0.1:6070/readyz in a browser: `{"status":"ok","db":"ok"}`.
 
 ## Reach it from your game servers
@@ -72,8 +76,9 @@ you need no proxy.
 
 ## Set up your network
 
-`npm run admin -- <command>` works on the database directly (`npm run admin -- help` lists every command). The same
-things are in the owner API ([docs/api.md](docs/api.md)), for scripts and, later, the Highwatch desk.
+The **console** in your browser does all of this (next section). `npm run admin -- <command>` does it from the
+command line, on the database directly (`npm run admin -- help` lists every command). The same things are in the
+owner API ([docs/api.md](docs/api.md), [docs/openapi.yaml](docs/openapi.yaml)), for scripts.
 
 1. **Add each game server.** The key is shown once: copy it now.
 
@@ -118,11 +123,37 @@ things are in the owner API ([docs/api.md](docs/api.md)), for scripts and, later
 5. **Optional:** `npm run admin -- network start-server <network> <server>` makes every new character start on that
    server.
 
+## The console
+
+The API serves a web console at `/console/`: your network on one page, and every owner task without the command line.
+
+![The console's overview: servers, the network map, and what needs you](docs/console/overview-dark.png)
+
+- **Overview:** every server with its players, last beat, mod version and Terje fingerprint; a map of the routes,
+  foot and vehicle drawn apart; stuck trips, held characters and doctor warnings at the top. It refreshes every 15 s.
+- **Servers:** register a server (its key is shown once), rotate a key, add a server to the network with the address
+  and port players connect to, open or close it to arrivals.
+- **Routes:** the departures board, and an editor in the in-game admin panel's words: Foot or Vehicle route, Leaves
+  from, Lands at, the fare, the bank top-up, hours, cooldown and wait.
+- **Characters:** search by name or Steam64; a character's ledger, trips and held luggage; hold, release, move home
+  and send.
+- **Audit** of what the in-game admin panels changed, and **Settings** with the start server, the in-game admin
+  switch and the doctor, with what to do about each warning.
+
+**Open it** on the API's own machine at http://127.0.0.1:6070/console/, or from anywhere through the HTTPS proxy
+below: https://travel.example.com/console/. It binds where the API binds, so it is exactly as reachable as the API.
+Sign in with `TRAVEL_ADMIN_TOKEN`. The token stays in that browser tab only and is never put in a URL; closing the
+tab forgets it. Wrong tokens count against the same per-address limit as wrong server keys.
+
+Never open the console over plain HTTP from another machine: the token would cross the network unencrypted. Use the
+proxy, or a tunnel to 127.0.0.1. `TRAVEL_CONSOLE=0` in `.env` turns the console off and leaves the API as it is.
+More, with screenshots: [docs/console.md](docs/console.md).
+
 ## Keep it running
 
-**Windows:** run `npm start` from a Task Scheduler task set to start at boot, run whether the user is logged on or
-not, and restart on failure. Or install it as a service with NSSM (https://nssm.cc): program `node`, arguments
-`--env-file=.env src/server.mjs`, start-up folder the repository folder.
+**Windows:** `scripts\windows\install.ps1` registers a Task Scheduler task that starts the API at boot as SYSTEM,
+starts it again whenever it stops, and writes its output to `logs\api-<date>.log` (14 days kept). NSSM works too.
+Both are in [scripts/windows/README.md](scripts/windows/README.md).
 
 **Linux (systemd):** `/etc/systemd/system/highwatch-travel.service`:
 
@@ -149,7 +180,19 @@ on one database stay safe (MongoDB still lets only one claim win), but game serv
 ## Back up
 
 The database is the only copy of the ledger and of every character in transit. Back it up every night:
-[docs/mongodb-setup.md, Backups](docs/mongodb-setup.md#backups).
+[docs/mongodb-setup.md, Backups](docs/mongodb-setup.md#backups). On Windows, `scripts\windows\backup.ps1` and
+`restore.ps1` do it, and `install.ps1 -RegisterBackup` runs the backup at 04:00 every night.
+
+## Check it
+
+```sh
+npm run admin -- doctor
+```
+
+One line per check, `OK`, `WARN` or `FAIL`: MongoDB reachable and signed in, the indexes, the admin token's format,
+each server's last beat and mod version, routes that use a server outside their network, trips past their transit
+time, and the API answering on its port. It only reads. It exits with 1 when a check fails, so a monitoring task
+can run it.
 
 ## Update
 
@@ -176,7 +219,10 @@ npm run admin -- send <network> <steam64> <server>        # its home server runs
 - Server keys are stored as SHA-256 hashes; the API cannot show a key again. A leaked key:
   `npm run admin -- server rotate <server>`, then put the new one in that server's config.
 - Thirty unknown keys from one address in ten minutes and it is refused for a while.
-- No key, token or request body is ever written to the log.
+- Thirty wrong admin tokens from one address count the same way.
+- No key, token or request body is ever written to the log. Every answer carries `X-Request-Id`, and the log line
+  of a failed request names it, so a report can point at one line.
+- The console sends a strict Content-Security-Policy: its own scripts and styles only, no remote origin, no framing.
 - MongoDB listens on 127.0.0.1 with authentication on, and the API connects as a user that can only touch its own
   database.
 
@@ -184,7 +230,18 @@ npm run admin -- send <network> <steam64> <server>        # its home server runs
 
 `npm test` runs the suite against a real MongoDB, on a throwaway database per test that is dropped afterwards
 (`TRAVEL_TEST_MONGO_URL`, default `mongodb://127.0.0.1:27017`, needs a server without authentication or a user that
-may create and drop databases). The tests include claims racing from two processes.
+may create and drop databases). The tests include claims racing from two processes, and a check that
+`docs/openapi.yaml` describes exactly the routes `src/server.mjs` answers.
+
+The console is plain JavaScript modules and CSS in `console/`, with no build step and no dependency: edit a file and
+reload the page. To see it full of data, seed a throwaway database with the demo network (made-up servers and
+players; it refuses any database without "demo" in its name):
+
+```sh
+TRAVEL_MONGO_URL=mongodb://127.0.0.1:27017/console_demo node scripts/demo-seed.mjs --beat
+TRAVEL_MONGO_URL=mongodb://127.0.0.1:27017/console_demo TRAVEL_ADMIN_TOKEN=<a token> TRAVEL_PORT=6071 node src/server.mjs
+TRAVEL_MONGO_URL=mongodb://127.0.0.1:27017/console_demo node scripts/demo-seed.mjs --drop
+```
 
 ## Licence
 

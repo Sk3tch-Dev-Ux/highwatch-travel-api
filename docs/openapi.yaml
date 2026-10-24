@@ -1,0 +1,901 @@
+openapi: 3.1.0
+info:
+  title: Highwatch Travel API
+  version: 1.4.0
+  summary: One DayZ character across a network of servers.
+  description: |
+    Two kinds of caller. The @Highwatch-Travel mod on each game server calls `/travel/...` with its server key as
+    the first field of a JSON body. The network's owner calls `/v1/...` with `Authorization: Bearer <TRAVEL_ADMIN_TOKEN>`,
+    from the travel-admin CLI, a script, or the web console at `/console/`.
+
+    Every answer carries `X-Request-Id`. Send your own (8 to 64 letters, digits, `.`, `_` or `-`) and it is kept, so a
+    proxy's id and the API's log line match.
+
+    Every refusal on `/v1` answers `{error, code}`, plus `field` when one body field is wrong. `code` is stable; `error`
+    is a sentence for people and may change. A mod refusal the player should see answers HTTP 200 with
+    `{ok: false, code, error, who}` instead, because DayZ's RestCallback.OnError only receives a number. The prose
+    guide is docs/api.md.
+  license:
+    name: Source-available, see LICENSE
+    identifier: LicenseRef-Highwatch
+servers:
+  - url: http://127.0.0.1:6070
+    description: The API on its own machine. Put an HTTPS proxy in front for anything else.
+tags:
+  - name: health
+  - name: mod
+    description: The @Highwatch-Travel mod. The server key is the first field of every body.
+  - name: owner
+    description: The network's owner. Needs the admin token.
+  - name: console
+    description: The web console's static files. Off with TRAVEL_CONSOLE=0.
+security:
+  - adminToken: []
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: The process runs
+      security: []
+      responses:
+        '200':
+          description: Running.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { const: ok }
+                  version: { type: string }
+  /readyz:
+    get:
+      tags: [health]
+      summary: The process runs and MongoDB answers
+      security: []
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ready' }
+        '503':
+          description: MongoDB does not answer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ready' }
+
+  /travel/beat:
+    post:
+      tags: [mod]
+      summary: Heartbeat; answers the network as this server sees it
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/Mod'
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '400': { $ref: '#/components/responses/ModError' }
+        '401': { $ref: '#/components/responses/ModError' }
+        '413': { $ref: '#/components/responses/ModError' }
+        '429': { $ref: '#/components/responses/ModError' }
+  /travel/inbox:
+    post:
+      tags: [mod]
+      summary: Arrivals, returns, queued chat and sends, ledger changes (long-poll)
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/ledger:
+    post:
+      tags: [mod]
+      summary: Where a character lives
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/quote:
+    post:
+      tags: [mod]
+      summary: Seconds left on each route's cooldown from this server
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/home:
+    post:
+      tags: [mod]
+      summary: Claims a never-seen character for this server
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/chat:
+    post:
+      tags: [mod]
+      summary: Queues a chat line for every other server
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/transfers:
+    post:
+      tags: [mod]
+      summary: Reserves a solo trip
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/transfers/{transfer}/part:
+    post:
+      tags: [mod]
+      summary: Stores one part of the snapshot
+      security: []
+      parameters: [{ $ref: '#/components/parameters/transfer' }]
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+        '403': { $ref: '#/components/responses/ModError' }
+        '413': { $ref: '#/components/responses/ModError' }
+  /travel/transfers/{transfer}/commit:
+    post:
+      tags: [mod]
+      summary: The snapshot is safe; the character is in transit
+      security: []
+      parameters: [{ $ref: '#/components/parameters/transfer' }]
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+        '403': { $ref: '#/components/responses/ModError' }
+  /travel/transfers/{transfer}/cancel:
+    post:
+      tags: [mod]
+      summary: Gives up a reservation
+      security: []
+      parameters: [{ $ref: '#/components/parameters/transfer' }]
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+        '403': { $ref: '#/components/responses/ModError' }
+  /travel/transfers/{transfer}/reclaim:
+    post:
+      tags: [mod]
+      summary: After the transit time, the source's own download path
+      security: []
+      parameters: [{ $ref: '#/components/parameters/transfer' }]
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+        '403': { $ref: '#/components/responses/ModError' }
+  /travel/transfers/{transfer}/land:
+    post:
+      tags: [mod]
+      summary: The one claim
+      security: []
+      parameters: [{ $ref: '#/components/parameters/transfer' }]
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+        '403': { $ref: '#/components/responses/ModError' }
+  /travel/groups:
+    post:
+      tags: [mod]
+      summary: Reserves a party trip, with or without a vehicle (mod 0.6.0)
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/groups/{group}/cancel:
+    post:
+      tags: [mod]
+      summary: Calls a party trip off before it leaves
+      security: []
+      parameters: [{ $ref: '#/components/parameters/group' }]
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/admin:
+    post:
+      tags: [mod]
+      summary: The in-game admin panel's actions (needs inGameAdmin on the network)
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Mod' }
+      responses:
+        '200': { $ref: '#/components/responses/ModAnswer' }
+        '401': { $ref: '#/components/responses/ModError' }
+  /travel/snapshot/{transfer}/{token}:
+    get:
+      tags: [mod]
+      summary: The snapshot text; the token is one-time per side
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/transfer' }
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+      responses:
+        '200':
+          description: The snapshot exactly as committed.
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/Refusal' }
+
+  /v1/overview:
+    get:
+      tags: [owner]
+      summary: Everything the console's landing page shows
+      description: Every registered server, every network with its servers (online state, players, mod version, beat age), routes, character counts by state, held characters, live and stuck trips, and the doctor's results.
+      responses:
+        '200':
+          description: The overview.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Overview' }
+        '401': { $ref: '#/components/responses/Refusal' }
+        '429': { $ref: '#/components/responses/Refusal' }
+  /v1/doctor:
+    get:
+      tags: [owner]
+      summary: The health checks of travel-admin doctor, run inside the API
+      responses:
+        '200':
+          description: One result per check.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Doctor' }
+        '401': { $ref: '#/components/responses/Refusal' }
+  /v1/servers:
+    get:
+      tags: [owner]
+      summary: Every registered server (never its key)
+      responses:
+        '200':
+          description: The servers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers: { type: array, items: { $ref: '#/components/schemas/RegisteredServer' } }
+        '401': { $ref: '#/components/responses/Refusal' }
+    post:
+      tags: [owner]
+      summary: Registers a server; its key is in this answer only
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Added. Keep the key; it is never shown again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerKey' }
+        '400': { $ref: '#/components/responses/Refusal' }
+        '401': { $ref: '#/components/responses/Refusal' }
+  /v1/servers/{server}/rotate:
+    post:
+      tags: [owner]
+      summary: A new key; the old one stops working at once
+      parameters: [{ $ref: '#/components/parameters/server' }]
+      responses:
+        '200':
+          description: The new key, shown once.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerKey' }
+        '404': { $ref: '#/components/responses/Refusal' }
+  /v1/servers/{server}:
+    delete:
+      tags: [owner]
+      summary: Removes a server that is in no network
+      parameters: [{ $ref: '#/components/parameters/server' }]
+      responses:
+        '204': { description: Removed. }
+        '404': { $ref: '#/components/responses/Refusal' }
+        '409': { $ref: '#/components/responses/Refusal' }
+  /v1/networks:
+    get:
+      tags: [owner]
+      summary: Every network with its servers, routes and character counts
+      responses:
+        '200':
+          description: The networks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  networks: { type: array, items: { $ref: '#/components/schemas/Network' } }
+    post:
+      tags: [owner]
+      summary: Creates a network
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Network' }
+        '400': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}:
+    get:
+      tags: [owner]
+      summary: One network
+      parameters: [{ $ref: '#/components/parameters/network' }]
+      responses:
+        '200':
+          description: The network.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Network' }
+        '404': { $ref: '#/components/responses/Refusal' }
+    post:
+      tags: [owner]
+      summary: Renames it, sets the start server, or turns in-game admin on or off
+      parameters: [{ $ref: '#/components/parameters/network' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 64 }
+                startServer: { type: string, description: 'A member server id, or "" for any.' }
+                inGameAdmin: { type: boolean }
+      responses:
+        '200':
+          description: The network after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Network' }
+        '400': { $ref: '#/components/responses/Refusal' }
+        '404': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/members:
+    post:
+      tags: [owner]
+      summary: Adds a server to the network, or changes it
+      parameters: [{ $ref: '#/components/parameters/network' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [server, address, port]
+              properties:
+                server: { type: string, pattern: '^[a-f0-9]{16}$' }
+                address: { type: string, description: The address players connect to. }
+                port: { type: integer, minimum: 1, maximum: 65535, description: The game port players connect to. }
+                label: { type: string, maxLength: 64 }
+                open: { type: boolean, default: true, description: false closes it to arrivals. }
+      responses:
+        '200':
+          description: The network after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Network' }
+        '400': { $ref: '#/components/responses/Refusal' }
+        '404': { $ref: '#/components/responses/Refusal' }
+        '409': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/members/{server}:
+    delete:
+      tags: [owner]
+      summary: Removes a server from the network, unless a trip or a route uses it
+      parameters:
+        - { $ref: '#/components/parameters/network' }
+        - { $ref: '#/components/parameters/server' }
+      responses:
+        '200':
+          description: The network after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Network' }
+        '409': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/characters:
+    get:
+      tags: [owner]
+      summary: Characters, newest change first
+      parameters:
+        - { $ref: '#/components/parameters/network' }
+        - name: q
+          in: query
+          description: Part of a name, or of a Steam64.
+          schema: { type: string, maxLength: 64 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: The characters.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  characters: { type: array, items: { $ref: '#/components/schemas/Character' } }
+        '400': { $ref: '#/components/responses/Refusal' }
+        '404': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/characters/{steam64}:
+    get:
+      tags: [owner]
+      summary: One character, its ledger, trips and held luggage
+      parameters:
+        - { $ref: '#/components/parameters/network' }
+        - { $ref: '#/components/parameters/steam64' }
+      responses:
+        '200':
+          description: The character (null when the network never saw it) and its history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/History' }
+        '404': { $ref: '#/components/responses/Refusal' }
+    post:
+      tags: [owner]
+      summary: Holds it, releases it, or moves its home (never while travelling)
+      parameters:
+        - { $ref: '#/components/parameters/network' }
+        - { $ref: '#/components/parameters/steam64' }
+        - { $ref: '#/components/parameters/staff' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state: { enum: [held, home] }
+                home: { type: string, description: A member server id. Leave it out to keep the home. }
+      responses:
+        '200':
+          description: The character after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Character' }
+        '400': { $ref: '#/components/responses/Refusal' }
+        '409': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/send:
+    post:
+      tags: [owner]
+      summary: A staff send; the home server runs the trip with no route rules
+      parameters:
+        - { $ref: '#/components/parameters/network' }
+        - { $ref: '#/components/parameters/staff' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [steamId, to]
+              properties:
+                steamId: { type: string, pattern: '^\d{17}$' }
+                to: { type: string, pattern: '^[a-f0-9]{16}$' }
+      responses:
+        '200':
+          description: Queued on the character's home server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { const: true }
+                  queuedOn: { type: string }
+        '400': { $ref: '#/components/responses/Refusal' }
+        '409': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/routes:
+    post:
+      tags: [owner]
+      summary: Creates a route, or updates it when the body has its id
+      parameters: [{ $ref: '#/components/parameters/network' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Route' }
+      responses:
+        '200':
+          description: The network after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Network' }
+        '400': { $ref: '#/components/responses/Refusal' }
+        '409': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/routes/{route}:
+    delete:
+      tags: [owner]
+      summary: Removes a route
+      parameters:
+        - { $ref: '#/components/parameters/network' }
+        - name: route
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-f0-9]{8}$' }
+      responses:
+        '200':
+          description: The network after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Network' }
+        '404': { $ref: '#/components/responses/Refusal' }
+  /v1/networks/{network}/audit:
+    get:
+      tags: [owner]
+      summary: What the in-game admin panel changed, newest first
+      parameters:
+        - { $ref: '#/components/parameters/network' }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - name: server
+          in: query
+          description: Only changes made from this server.
+          schema: { type: string }
+        - name: staff
+          in: query
+          description: Only changes by this staff member, by Steam64 or name.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The audit rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit: { type: array, items: { $ref: '#/components/schemas/AuditRow' } }
+        '404': { $ref: '#/components/responses/Refusal' }
+
+  /:
+    get:
+      tags: [console]
+      summary: Sends a browser to the console
+      security: []
+      responses:
+        '302': { description: 'Location: /console/' }
+  /console:
+    get:
+      tags: [console]
+      summary: Sends a browser to the console
+      security: []
+      responses:
+        '302': { description: 'Location: /console/' }
+  /console/:
+    get:
+      tags: [console]
+      summary: The console's page
+      security: []
+      responses:
+        '200':
+          description: The page, with a strict Content-Security-Policy.
+          content:
+            text/html: {}
+        '304': { description: Not changed (ETag). }
+  /console/{file}:
+    get:
+      tags: [console]
+      summary: One of the console's files
+      security: []
+      parameters:
+        - name: file
+          in: path
+          required: true
+          description: A file in the console folder, which may be in a subfolder (`views/servers.js`).
+          schema: { type: string, pattern: '^[a-z0-9-]+(/[a-z0-9-]+)*\.(html|css|js|mjs|svg|png|ico|webmanifest)$' }
+      responses:
+        '200': { description: The file. }
+        '304': { description: Not changed (ETag). }
+        '404': { $ref: '#/components/responses/Refusal' }
+
+components:
+  securitySchemes:
+    adminToken:
+      type: http
+      scheme: bearer
+      description: TRAVEL_ADMIN_TOKEN. Thirty wrong tokens or server keys from one address in ten minutes answer 429 until the window ends.
+  parameters:
+    server:
+      name: server
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-f0-9]{16}$' }
+    network:
+      name: network
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-f0-9]{16}$' }
+    steam64:
+      name: steam64
+      in: path
+      required: true
+      schema: { type: string, pattern: '^\d{17}$' }
+    transfer:
+      name: transfer
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-f0-9]{24}$' }
+    group:
+      name: group
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-f0-9]{24}$' }
+    staff:
+      name: X-Travel-Staff
+      in: header
+      description: The staff name the ledger writes on holds, releases and sends. Percent-encoded UTF-8 is decoded.
+      schema: { type: string, maxLength: 64 }
+  requestBodies:
+    Mod:
+      required: true
+      description: 'JSON whose first field is the server key: {"apiKey":"hwt_...", ...}. The fields per route are in docs/api.md.'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [apiKey]
+            properties:
+              apiKey: { type: string, pattern: '^hwt_[A-Za-z0-9_-]{43}$' }
+  responses:
+    ModAnswer:
+      description: '{ok: true, ...} on success. A refusal the player should see is {ok: false, code, error, who}, still HTTP 200.'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+              code: { $ref: '#/components/schemas/ModCode' }
+              error: { type: string }
+              who: { type: string, description: The party member a refusal is about. }
+    ModError:
+      description: A bad key (401), too many bad keys (429), a body too large (413) or not JSON (400), with its real status.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Refusal' }
+    Refusal:
+      description: '{error, code}, plus field when one body field is wrong.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Refusal' }
+  schemas:
+    Refusal:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string, description: A sentence for people. It may change; code does not. }
+        code: { $ref: '#/components/schemas/OwnerCode' }
+        field: { type: string, description: The body or query field that is wrong. }
+    OwnerCode:
+      description: The stable code on every refusal outside the mod's 200 answers.
+      type: string
+      enum:
+            - invalid
+            - badJson
+            - badRequest
+            - unauthorized
+            - unknownKey
+            - rateLimited
+            - forbidden
+            - notFound
+            - methodNotAllowed
+            - conflict
+            - tooLarge
+            - unavailable
+            - unknownServer
+            - unknownNetwork
+            - unknownRoute
+            - unknownTransfer
+            - unknownGroup
+            - unknownSnapshot
+            - member
+            - otherNetwork
+            - travelling
+            - transit
+            - notHome
+            - routes
+            - routesMax
+            - notYours
+            - changed
+    ModCode:
+      description: The codes the mod reads. A refusal with none of its own carries its HTTP status as text ("400").
+      type: string
+    Ready:
+      type: object
+      properties:
+        status: { type: string }
+        db: { type: string }
+    RegisteredServer:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+    ServerKey:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        key: { type: string, description: 'hwt_ and 43 characters. Shown once: only its SHA-256 is stored.' }
+    Zone:
+      type: [object, 'null']
+      properties:
+        x: { type: number, minimum: 0, maximum: 40960 }
+        z: { type: number, minimum: 0, maximum: 40960 }
+        radius: { type: number, minimum: 0, maximum: 2000, description: 0 means none. }
+        label: { type: string, maxLength: 40 }
+    Route:
+      type: object
+      required: [name, from, to]
+      properties:
+        id: { type: string, pattern: '^[a-f0-9]{8}$', description: Give it to update that route. }
+        name: { type: string, maxLength: 48 }
+        code: { type: string, pattern: '^[A-Z0-9]{2,4}$' }
+        from: { type: string }
+        to: { type: string }
+        terminal: { $ref: '#/components/schemas/Zone', description: Where it leaves from. Leave it out, or radius 0, for anywhere. }
+        landing: { $ref: '#/components/schemas/Zone', description: Where it lands. Leave it out for the destination's own landing points. }
+        cost:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            properties:
+              type: { type: string, pattern: '^[A-Za-z0-9_]{1,64}$' }
+              count: { type: integer, minimum: 1, maximum: 100 }
+        money: { type: integer, minimum: 0, maximum: 10000000 }
+        moneyFromAtm: { type: boolean }
+        vehicles: { type: boolean, description: A vehicle route takes a party in a car only. }
+        maxWeightKg: { type: integer, minimum: 0, maximum: 1000 }
+        hours: { type: string, description: '"08-20", or overnight "22-04". Empty for always.' }
+        cooldownMin: { type: integer, minimum: 0, maximum: 10080 }
+        waitSeconds: { type: integer, minimum: 0, maximum: 120 }
+        enabled: { type: boolean, default: true }
+    MemberServer:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        address: { type: string }
+        port: { type: integer }
+        open: { type: boolean }
+        online: { type: boolean }
+        players: { type: integer }
+        slots: { type: integer }
+        world: { type: string }
+        terje: { type: string }
+        modset: { type: string }
+        beatAt: { type: string }
+        version: { type: string, description: Overview only. The mod version of its last beat. }
+        beatAgeSec: { type: [integer, 'null'], description: Overview only. }
+    Network:
+      type: object
+      properties:
+        network:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            settings:
+              type: object
+              properties:
+                startServer: { type: string }
+                inGameAdmin: { type: boolean }
+        servers: { type: array, items: { $ref: '#/components/schemas/MemberServer' } }
+        players: { type: array, items: { type: object } }
+        routes: { type: array, items: { $ref: '#/components/schemas/Route' } }
+    Character:
+      type: object
+      properties:
+        steamId: { type: string }
+        name: { type: string }
+        state: { enum: [home, transit, held] }
+        home: { type: string }
+        transfer: { type: string }
+        updatedAt: { type: string }
+    History:
+      type: object
+      properties:
+        character: { oneOf: [{ $ref: '#/components/schemas/Character' }, { type: 'null' }] }
+        ledger: { type: array, items: { type: object } }
+        transfers: { type: array, items: { type: object } }
+        held: { type: array, items: { type: object } }
+    AuditRow:
+      type: object
+      properties:
+        id: { type: integer }
+        server: { type: string }
+        staffId: { type: string }
+        staffName: { type: string }
+        action: { type: string }
+        detail: { type: object }
+        at: { type: string }
+    Doctor:
+      type: object
+      properties:
+        failed: { type: boolean }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              level: { enum: [OK, WARN, FAIL] }
+              check: { type: string }
+              text: { type: string }
+    Overview:
+      type: object
+      properties:
+        version: { type: string }
+        at: { type: string }
+        servers:
+          type: array
+          items:
+            allOf:
+              - { $ref: '#/components/schemas/RegisteredServer' }
+              - type: object
+                properties:
+                  network: { type: string, description: '"" when in no network.' }
+        networks:
+          type: array
+          items:
+            allOf:
+              - { $ref: '#/components/schemas/Network' }
+              - type: object
+                properties:
+                  characters:
+                    type: object
+                    properties:
+                      home: { type: integer }
+                      transit: { type: integer }
+                      held: { type: integer }
+                  held: { type: array, items: { $ref: '#/components/schemas/Character' } }
+                  luggage: { type: integer, description: Held luggage rows still kept. }
+                  transfers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        steamId: { type: string }
+                        name: { type: string }
+                        from: { type: string }
+                        to: { type: string }
+                        route: { type: string }
+                        state: { enum: [reserved, committed] }
+                        kind: { enum: [character, vehicle] }
+                        group: { type: string }
+                        createdAt: { type: string }
+                        committedAt: { type: string }
+                        expiresAt: { type: string }
+                        stuck: { type: boolean, description: Committed and past its transit time. }
+                        lapsing: { type: boolean, description: Reserved and past its time. }
+        doctor: { $ref: '#/components/schemas/Doctor' }

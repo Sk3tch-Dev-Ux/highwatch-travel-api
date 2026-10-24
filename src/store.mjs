@@ -45,6 +45,9 @@ const ROUTE_CODE = /^[A-Z0-9]{2,4}$/;
 const LABELS_FROM = [0, 3, 0];
 // Mods from 0.5.0 charge a route's money fare (Expansion Market) and carry the ATM balance.
 const MONEY_FROM = [0, 5, 0];
+// Mods from 0.6.0 travel as a party, and with a vehicle (`/travel/groups`).
+const GROUPS_FROM = [0, 6, 0];
+export const PARTY_MAX = 4;
 const MONEY_MAX = 10000000;
 export const ROUTES_MAX = 64;
 const HELD_MAX = 200;
@@ -52,7 +55,10 @@ const LIVE = ['reserved', 'committed'];
 
 const str = v => typeof v === 'string' ? v : '';
 const iso = v => v === null || v === undefined ? '' : new Date(v).toISOString();
-export const failure = (status, message, code = '') => Object.assign(new Error(message), { status, code });
+export const failure = (status, message, code = '', who = '') => Object.assign(new Error(message), { status, code, who });
+// A refusal with a stable code for the owner API (`apiCode`) and, for a bad field, which one. `code` stays empty, so the
+// mod keeps seeing exactly what it always did (the status number) and nothing on its wire changes.
+export const refuse = (status, message, apiCode, field = '') => Object.assign(failure(status, message), { apiCode, field });
 const token = () => randomBytes(32).toString('base64url');
 const clean = (v, max) => str(v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
 const atLeast = (version, min) => { const v = str(version).split('.').map(n => Number.parseInt(n, 10) || 0); for (let i = 0; i < min.length; i++) if ((v[i] ?? 0) !== min[i]) return (v[i] ?? 0) > min[i]; return true; };
@@ -63,7 +69,7 @@ export class TravelStore {
   constructor(db, { now = Date.now } = {}) {
     this.db = db; this.now = now;
     const c = name => db.collection(name);
-    this.c = { servers: c('servers'), networks: c('networks'), members: c('members'), characters: c('characters'), ledger: c('ledger'), transfers: c('transfers'), parts: c('parts'), queue: c('queue'), routes: c('routes'), held: c('held'), counters: c('counters') };
+    this.c = { servers: c('servers'), networks: c('networks'), members: c('members'), characters: c('characters'), ledger: c('ledger'), transfers: c('transfers'), parts: c('parts'), queue: c('queue'), routes: c('routes'), held: c('held'), counters: c('counters'), audit: c('audit') };
     // server id -> set of resolvers waiting on its inbox.
     this.waiters = new Map();
     this.tail = Promise.resolve();
@@ -85,11 +91,13 @@ export class TravelStore {
       c.transfers.createIndex({ toServer: 1, state: 1 }),
       c.transfers.createIndex({ fromServer: 1, state: 1, expiresAt: 1 }),
       c.transfers.createIndex({ state: 1, expiresAt: 1 }),
+      c.transfers.createIndex({ group: 1 }, { partialFilterExpression: { group: { $type: 'string' } } }),
       c.parts.createIndex({ transfer: 1, n: 1 }, { unique: true }),
       c.queue.createIndex({ server: 1, _id: 1 }),
       c.queue.createIndex({ at: 1 }),
       c.routes.createIndex({ network: 1, createdAt: 1 }),
       c.held.createIndex({ network: 1, steamId: 1, _id: -1 }),
+      c.audit.createIndex({ network: 1, at: -1 }),
     ]);
     return this;
   }
@@ -100,7 +108,7 @@ export class TravelStore {
   // A server key is shown once, when the server is added or its key rotated. Only its SHA-256 is stored.
   async addServer(name) {
     const label = clean(name, 64);
-    if (!label) throw failure(400, 'Name the server.');
+    if (!label) throw refuse(400, 'Name the server.', 'invalid', 'name');
     const id = randomBytes(8).toString('hex'), key = `hwt_${token()}`;
     await this.c.servers.insertOne({ _id: id, name: label, keyHash: hashKey(key), createdAt: this.now() });
     return { id, name: label, key };
@@ -108,17 +116,17 @@ export class TravelStore {
   async rotateKey(id) {
     const key = `hwt_${token()}`;
     const r = await this.c.servers.updateOne({ _id: str(id) }, { $set: { keyHash: hashKey(key) } });
-    if (!r.matchedCount) throw failure(404, 'Unknown server.');
+    if (!r.matchedCount) throw refuse(404, 'Unknown server.', 'unknownServer');
     return { id, key };
   }
   async removeServer(id) {
-    if (await this.c.members.findOne({ _id: str(id) })) throw failure(409, 'Remove the server from its network first.');
+    if (await this.c.members.findOne({ _id: str(id) })) throw refuse(409, 'Remove the server from its network first.', 'member');
     const r = await this.c.servers.deleteOne({ _id: str(id) });
-    if (!r.deletedCount) throw failure(404, 'Unknown server.');
+    if (!r.deletedCount) throw refuse(404, 'Unknown server.', 'unknownServer');
   }
   async servers() { return (await this.c.servers.find({}, { projection: { keyHash: 0 } }).sort({ name: 1 }).toArray()).map(s => ({ id: s._id, name: s.name, createdAt: iso(s.createdAt) })); }
   async serverByKey(key) { if (!SERVER_KEY.test(str(key))) return null; const s = await this.c.servers.findOne({ keyHash: hashKey(key) }); return s ? { id: s._id, name: s.name } : null; }
-  async serverRecord(id) { const s = SERVER_ID.test(str(id)) ? await this.c.servers.findOne({ _id: id }) : null; if (!s) throw failure(404, 'Unknown server.'); return s; }
+  async serverRecord(id) { const s = SERVER_ID.test(str(id)) ? await this.c.servers.findOne({ _id: id }) : null; if (!s) throw refuse(404, 'Unknown server.', 'unknownServer', 'server'); return s; }
 
   // --- routes ----------------------------------------------------------------------------------------
   // A route is how a player travels on their own: from one server to another, from an optional terminal zone,
@@ -126,43 +134,45 @@ export class TravelStore {
   // a cooldown and a wait. Staff sends ignore routes. Hours are "08-20" (08:00 to 20:00) or "22-04" (overnight).
   async parseRoute(networkId, p) {
     const id = p?.id === undefined || p.id === '' ? randomBytes(4).toString('hex') : str(p.id);
-    if (!ROUTE_ID.test(id)) throw failure(400, 'Invalid route id.');
+    if (!ROUTE_ID.test(id)) throw refuse(400, 'Invalid route id.', 'invalid', 'id');
     const member = async s => !!(await this.c.members.findOne({ _id: s, network: networkId }));
     const from = str(p?.from), to = str(p?.to);
-    if (!(await member(from)) || !(await member(to)) || from === to) throw failure(400, 'A route goes from one member server to another.');
+    if (!(await member(from)) || !(await member(to)) || from === to) throw refuse(400, 'A route goes from one member server to another.', 'invalid', from && from === to ? 'to' : 'from');
     const name = clean(p?.name, 48);
-    if (!name) throw failure(400, 'Name the route.');
+    if (!name) throw refuse(400, 'Name the route.', 'invalid', 'name');
     // A zone's label is the name players see ("Berezino station"); the screens fall back to a grid reference.
     const zone = (z, what) => {
       if (z === null || z === undefined || z === '') return null;
       const x = Number(z.x), zz = Number(z.z), radius = Number(z.radius ?? 0);
-      if (![x, zz, radius].every(Number.isFinite) || x < 0 || zz < 0 || x > 40960 || zz > 40960 || radius < 0 || radius > 2000) throw failure(400, `Invalid ${what}: x and z in metres, radius 0 to 2000.`);
+      if (![x, zz, radius].every(Number.isFinite) || x < 0 || zz < 0 || x > 40960 || zz > 40960 || radius < 0 || radius > 2000) throw refuse(400, `Invalid ${what}: x and z in metres, radius 0 to 2000.`, 'invalid', what);
       return { x, z: zz, radius, label: clean(z.label, 40) };
     };
     // The short code on the departures board ("NL"). Optional; the screens number routes without one.
     const code = str(p?.code).trim().toUpperCase();
-    if (code && !ROUTE_CODE.test(code)) throw failure(400, 'A route code is 2 to 4 letters or digits.');
+    if (code && !ROUTE_CODE.test(code)) throw refuse(400, 'A route code is 2 to 4 letters or digits.', 'invalid', 'code');
     const cost = (Array.isArray(p?.cost) ? p.cost : []).map(c => ({ type: str(c?.type).trim(), count: Number(c?.count ?? 1) }));
-    if (cost.length > 8 || cost.some(c => !CLASS_NAME.test(c.type) || !Number.isInteger(c.count) || c.count < 1 || c.count > 100)) throw failure(400, 'A cost is up to 8 item classes, each 1 to 100 items.');
+    if (cost.length > 8 || cost.some(c => !CLASS_NAME.test(c.type) || !Number.isInteger(c.count) || c.count < 1 || c.count > 100)) throw refuse(400, 'A cost is up to 8 item classes, each 1 to 100 items.', 'invalid', 'cost');
     const hours = str(p?.hours).trim();
     const hm = HOURS.exec(hours);
-    if (hours && (!hm || Number(hm[1]) > 23 || Number(hm[2]) > 24)) throw failure(400, 'Hours are "08-20" in in-game time, or empty for always.');
-    const int = (v, min, max, what) => { const n = v === undefined || v === null || v === '' ? 0 : Number(v); if (!Number.isInteger(n) || n < min || n > max) throw failure(400, `Invalid ${what}.`); return n; };
+    if (hours && (!hm || Number(hm[1]) > 23 || Number(hm[2]) > 24)) throw refuse(400, 'Hours are "08-20" in in-game time, or empty for always.', 'invalid', 'hours');
+    const int = (v, min, max, what, field) => { const n = v === undefined || v === null || v === '' ? 0 : Number(v); if (!Number.isInteger(n) || n < min || n > max) throw refuse(400, `Invalid ${what}.`, 'invalid', field); return n; };
     // A fare in Expansion Market money, in the value its traders use; moneyFromAtm lets the bank pay what the player
     // does not carry.
-    const money = int(p?.money, 0, MONEY_MAX, `money fare: a whole amount from 0 to ${MONEY_MAX}`);
-    return { id, name, code, from, to, terminal: zone(p?.terminal, 'terminal'), landing: zone(p?.landing, 'landing'), cost, money, moneyFromAtm: money > 0 && p?.moneyFromAtm === true, maxWeightKg: int(p?.maxWeightKg, 0, 1000, 'weight cap'), hours, cooldownMin: int(p?.cooldownMin, 0, 10080, 'cooldown'), waitSeconds: int(p?.waitSeconds, 0, 120, 'wait'), enabled: p?.enabled !== false };
+    const money = int(p?.money, 0, MONEY_MAX, `money fare: a whole amount from 0 to ${MONEY_MAX}`, 'money');
+    return { id, name, code, from, to, terminal: zone(p?.terminal, 'terminal'), landing: zone(p?.landing, 'landing'), cost, money, moneyFromAtm: money > 0 && p?.moneyFromAtm === true, vehicles: p?.vehicles === true, maxWeightKg: int(p?.maxWeightKg, 0, 1000, 'weight cap', 'maxWeightKg'), hours, cooldownMin: int(p?.cooldownMin, 0, 10080, 'cooldown', 'cooldownMin'), waitSeconds: int(p?.waitSeconds, 0, 120, 'wait', 'waitSeconds'), enabled: p?.enabled !== false };
   }
   // No zone goes out as radius 0, never null: the mod reads routes into fixed classes. With labels false (a mod
   // older than 0.3.0) the route carries no `code` and its zones no `label`, the keys that mod has no member for.
   // With money false (older than 0.5.0) it carries no `money` or `moneyFromAtm`; such a mod cannot take a money route
   // (reserve refuses it), so it never runs one for free.
-  async routes(networkId, labels = true, money = true) {
+  async routes(networkId, labels = true, money = true, groups = true) {
     return (await this.c.routes.find({ network: networkId }).sort({ createdAt: 1, _id: 1 }).toArray()).map(d => {
-      const { code = '', money: fare = 0, moneyFromAtm = false, ...rest } = d.body;
+      const { code = '', money: fare = 0, moneyFromAtm = false, vehicles = false, ...rest } = d.body;
       const out = { ...rest, terminal: this.zoneOut(d.body.terminal, labels), landing: this.zoneOut(d.body.landing, labels) };
       if (labels) out.code = code;
       if (money) { out.money = fare; out.moneyFromAtm = moneyFromAtm; }
+      // `vehicles`: a car may take this route (0.6.0). An older mod has no member for it and cannot send a car.
+      if (groups) out.vehicles = vehicles;
       return out;
     });
   }
@@ -174,6 +184,7 @@ export class TravelStore {
   // Whether a member server's mod reads route codes and zone labels (its last beat said 0.3.0 or later).
   async readsLabels(serverId) { const m = await this.c.members.findOne({ _id: serverId }); return atLeast(m?.beat?.version, LABELS_FROM); }
   async readsMoney(serverId) { const m = await this.c.members.findOne({ _id: serverId }); return atLeast(m?.beat?.version, MONEY_FROM); }
+  async readsGroups(serverId) { const m = await this.c.members.findOne({ _id: serverId }); return atLeast(m?.beat?.version, GROUPS_FROM); }
   async route(networkId, id) { const r = await this.c.routes.findOne({ _id: id, network: networkId }); return r ? r.body : null; }
 
   // --- helpers ---------------------------------------------------------------------------------------
@@ -201,9 +212,9 @@ export class TravelStore {
     for (const r of await this.c.members.find({ network }, { projection: { _id: 1 } }).toArray()) this.wake(r._id);
   }
   async transfer(id) {
-    if (!TRANSFER_ID.test(str(id))) throw failure(400, 'Invalid transfer.');
+    if (!TRANSFER_ID.test(str(id))) throw refuse(400, 'Invalid transfer.', 'invalid', 'transfer');
     const t = await this.c.transfers.findOne({ _id: id });
-    if (!t) throw failure(404, 'Unknown transfer.');
+    if (!t) throw refuse(404, 'Unknown transfer.', 'unknownTransfer');
     return t;
   }
   async settleTransfer(id, fromState, set) {
@@ -239,7 +250,7 @@ export class TravelStore {
   }
   async network(networkId, self = '') {
     const n = await this.c.networks.findOne({ _id: networkId });
-    if (!n) throw failure(404, 'Unknown travel network.');
+    if (!n) throw refuse(404, 'Unknown travel network.', 'unknownNetwork');
     const members = await this.c.members.find({ network: networkId }).sort({ label: 1, _id: 1 }).toArray();
     const servers = [];
     for (const m of members) servers.push({ ...(await this.serverView(m)), self: m._id === self });
@@ -248,7 +259,11 @@ export class TravelStore {
       if (!this.online(m)) continue;
       for (const pl of m.beat?.players ?? []) roster.push({ steamId: pl.steamId, name: pl.name, server: m._id });
     }
-    return { network: { id: n._id, name: n.name, settings: n.settings ?? {} }, servers, players: roster, routes: await this.routes(networkId, self === '' || await this.readsLabels(self), self === '' || await this.readsMoney(self)) };
+    const groups = self === '' || await this.readsGroups(self);
+    // inGameAdmin is a 0.6.0 key: an older mod reads settings into a class without it.
+    const { inGameAdmin = false, ...older } = n.settings ?? {};
+    const settings = groups ? { ...older, inGameAdmin } : older;
+    return { network: { id: n._id, name: n.name, settings }, servers, players: roster, routes: await this.routes(networkId, self === '' || await this.readsLabels(self), self === '' || await this.readsMoney(self), groups) };
   }
 
   // The inbox: arrivals for this server, queued messages after its cursor and ledger changes after its ledger
@@ -262,10 +277,15 @@ export class TravelStore {
     const now = this.now();
     // The landing zone comes from the route; radius 0 means none, so the server's own landing points apply.
     const labels = await this.readsLabels(server.id);
+    const groups = atLeast(m.beat?.version, GROUPS_FROM);
     const arrivals = [];
-    for (const t of await this.c.transfers.find({ toServer: server.id, state: 'committed' }).sort({ committedAt: 1 }).toArray()) {
+    // A party's transfers wait here until every one of them is committed (groupReady).
+    for (const t of await this.c.transfers.find({ toServer: server.id, state: 'committed', $or: [{ group: { $in: [null, ''] } }, { groupReady: true }] }).sort({ committedAt: 1 }).toArray()) {
       const route = t.route ? await this.route(t.network, t.route) : null;
-      arrivals.push({ transferId: t._id, steamId: t.steamId, name: t.name, from: t.fromServer, expiresAt: iso(t.expiresAt), expired: t.expiresAt < now, path: `/travel/snapshot/${t._id}/${t.destToken}`, length: t.length, route: t.route ?? '', landing: this.zoneOut(route?.landing, labels) });
+      const a = { transferId: t._id, steamId: t.steamId, name: t.name, from: t.fromServer, expiresAt: iso(t.expiresAt), expired: t.expiresAt < now, path: `/travel/snapshot/${t._id}/${t.destToken}`, length: t.length, route: t.route ?? '', landing: this.zoneOut(route?.landing, labels) };
+      // A mod older than 0.6.0 reads arrivals into a class without these keys; it is never sent a party anyway.
+      if (groups) { a.group = t.group ?? ''; a.kind = t.kind ?? 'character'; }
+      arrivals.push(a);
     }
     // Committed transfers this server sent that nobody claimed in time: it may take them back.
     const returns = (await this.c.transfers.find({ fromServer: server.id, state: 'committed', expiresAt: { $lt: now } }).sort({ committedAt: 1 }).toArray())
@@ -311,7 +331,7 @@ export class TravelStore {
   // Where a character lives. A server asks on connect when its mirror has no row yet.
   async ledgerOf(server, p) {
     const m = await this.membership(server.id);
-    if (!STEAM64.test(str(p?.steamId))) throw failure(400, 'Invalid Steam64.');
+    if (!STEAM64.test(str(p?.steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
     const c = await this.character(m.network, p.steamId);
     return { steamId: p.steamId, state: c?.state ?? 'none', home: c?.home ?? '', transfer: c?.transfer ?? '' };
   }
@@ -319,7 +339,7 @@ export class TravelStore {
   // never need to agree. The same rule reserve applies: minutes since the last departure on any trip.
   async quote(server, p) {
     const m = await this.membership(server.id);
-    if (!STEAM64.test(str(p?.steamId))) throw failure(400, 'Invalid Steam64.');
+    if (!STEAM64.test(str(p?.steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
     const out = [];
     for (const r of (await this.routes(m.network)).filter(x => x.from === server.id)) out.push({ id: r.id, cooldownLeftSec: Math.max(0, Math.ceil((await this.cooldownLeft(m.network, p.steamId, r)) / 1000)) });
     return { ok: true, routes: out };
@@ -332,7 +352,7 @@ export class TravelStore {
   // First sight of a character with no record: it lives where it first played, unless the network names a start server.
   async claimHome(server, p) {
     const m = await this.membership(server.id);
-    if (!STEAM64.test(str(p?.steamId))) throw failure(400, 'Invalid Steam64.');
+    if (!STEAM64.test(str(p?.steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
     const existing = await this.character(m.network, p.steamId);
     if (existing) return { steamId: p.steamId, state: existing.state, home: existing.home, created: false };
     const settings = (await this.c.networks.findOne({ _id: m.network }))?.settings ?? {};
@@ -344,58 +364,128 @@ export class TravelStore {
   async reserve(server, p) {
     await this.sweep();
     const m = await this.membership(server.id);
-    if (!STEAM64.test(str(p?.steamId))) throw failure(400, 'Invalid Steam64.');
-    if (!SERVER_ID.test(str(p?.to)) || p.to === server.id) throw failure(400, 'Choose another server in the network.');
-    const dest = await this.c.members.findOne({ _id: p.to, network: m.network });
+    if (!STEAM64.test(str(p?.steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
+    const dest = await this.destination(server, m, p?.to, 1);
+    const c = await this.characterFree(m, server, p.steamId);
+    const routeId = await this.routeFor(m, server, p, p.steamId);
+    // A vehicle route runs between vehicle terminals and takes cars only (owner, 2026-10-24): nobody goes on foot.
+    if (routeId && (await this.route(m.network, routeId))?.vehicles) throw failure(409, 'This is a vehicle route. Drive up to its vehicle terminal.', 'vehicleOnly');
+    const id = await this.insertTransfer(m, server, dest, { steamId: p.steamId, name: clean(p.name, 64), route: routeId, kind: 'character', group: null });
+    // A character the ledger never saw lives here from now on, so the commit has a record to move.
+    if (!c) await this.setCharacter(m.network, p.steamId, clean(p.name, 64), 'home', server.id, '', 'first seen');
+    return { transferId: id, expiresAt: iso(this.now() + RESERVE_MS), partChars: PART_CHARS, partsMax: PARTS_MAX };
+  }
+  // The destination must be in the network, open, online, on the same Terje settings, with room for `seats`.
+  async destination(server, m, to, seats) {
+    if (!SERVER_ID.test(str(to)) || to === server.id) throw refuse(400, 'Choose another server in the network.', 'invalid', 'to');
+    const dest = await this.c.members.findOne({ _id: to, network: m.network });
     if (!dest) throw failure(404, 'That server is not in this network.', 'unknownServer');
     if (!dest.open) throw failure(409, 'That server is closed for travel.', 'closed');
     if (!this.online(dest)) throw failure(409, 'That server is offline.', 'offline');
     const beat = dest.beat ?? {}, mine = m.beat ?? {};
     if (beat.terje && mine.terje && beat.terje !== mine.terje) throw failure(409, 'Terje settings differ between the two servers.', 'terje');
-    if (beat.maxPlayers && Array.isArray(beat.players) && beat.players.length >= beat.maxPlayers) throw failure(409, 'That server is full.', 'full');
-    const c = await this.character(m.network, p.steamId);
-    if (c && c.state === 'held') throw failure(409, 'This character is held by staff.', 'held');
-    if (c && c.state === 'transit') throw failure(409, 'This character is already travelling.', 'transit');
-    if (c && c.home !== server.id) throw failure(409, 'This character does not live on this server.', 'notHome');
-    // A route, when the mod names one, must run from here to there and be open. Its cooldown counts from the
-    // character's last departure on any route or send.
-    let routeId = '';
-    if (p?.route !== undefined && p.route !== '') {
-      const r = ROUTE_ID.test(str(p.route)) ? await this.route(m.network, p.route) : null;
-      if (!r || r.from !== server.id || r.to !== p.to) throw failure(404, 'That route does not run from here to there.', 'unknownRoute');
-      if (!r.enabled) throw failure(409, 'That route is closed.', 'routeClosed');
-      if (r.money > 0 && !atLeast(m.beat?.version, MONEY_FROM)) throw failure(409, 'This route charges money, which needs Highwatch Travel 0.5.0 or later on this server.', 'upgrade');
-      if (r.cooldownMin) {
-        const left = await this.cooldownLeft(m.network, p.steamId, r);
-        if (left > 0) throw failure(409, `You can travel again in ${Math.ceil(left / 60000)} minutes.`, 'cooldown');
-      }
-      routeId = r.id;
+    const online = Array.isArray(beat.players) ? beat.players.length : 0;
+    if (beat.maxPlayers && online + seats > beat.maxPlayers) throw failure(409, seats > 1 ? `That server has room for ${Math.max(0, beat.maxPlayers - online)} more, not ${seats}.` : 'That server is full.', 'full');
+    return dest;
+  }
+  // The character lives here and is free to go. Returns its record, or null when the ledger never saw it.
+  async characterFree(m, server, steamId, who = '') {
+    const c = await this.character(m.network, steamId);
+    if (c && c.state === 'held') throw failure(409, 'This character is held by staff.', 'held', who);
+    if (c && c.state === 'transit') throw failure(409, 'This character is already travelling.', 'transit', who);
+    if (c && c.home !== server.id) throw failure(409, 'This character does not live on this server.', 'notHome', who);
+    return c;
+  }
+  // A route, when the mod names one, must run from here to there and be open. Its cooldown counts from the
+  // character's last departure on any route or send.
+  async routeFor(m, server, p, steamId, who = '') {
+    if (p?.route === undefined || p.route === '') return '';
+    const r = ROUTE_ID.test(str(p.route)) ? await this.route(m.network, p.route) : null;
+    if (!r || r.from !== server.id || r.to !== p.to) throw failure(404, 'That route does not run from here to there.', 'unknownRoute');
+    if (!r.enabled) throw failure(409, 'That route is closed.', 'routeClosed');
+    if (r.money > 0 && !atLeast(m.beat?.version, MONEY_FROM)) throw failure(409, 'This route charges money, which needs Highwatch Travel 0.5.0 or later on this server.', 'upgrade');
+    if (r.cooldownMin) {
+      const left = await this.cooldownLeft(m.network, steamId, r);
+      if (left > 0) throw failure(409, `You can travel again in ${Math.ceil(left / 60000)} minutes.`, 'cooldown', who);
     }
+    return r.id;
+  }
+  async insertTransfer(m, server, dest, { steamId, name, route, kind, group }) {
     const id = randomBytes(12).toString('hex');
-    const name = clean(p.name, 64);
     const now = this.now();
     try {
       // `live` and the unique partial index allow one reserved or committed trip per character, across processes too.
-      await this.c.transfers.insertOne({ _id: id, network: m.network, steamId: p.steamId, name, fromServer: server.id, toServer: p.to, state: 'reserved', live: true, createdAt: now, committedAt: null, expiresAt: now + RESERVE_MS, settledAt: null, settledBy: '', parts: 0, length: 0, sha256: '', destToken: '', backToken: '', reason: '', route: routeId });
+      await this.c.transfers.insertOne({ _id: id, network: m.network, steamId, name, fromServer: server.id, toServer: dest._id, state: 'reserved', live: true, createdAt: now, committedAt: null, expiresAt: now + RESERVE_MS, settledAt: null, settledBy: '', parts: 0, length: 0, sha256: '', destToken: '', backToken: '', reason: '', route, kind, group, groupReady: false });
     } catch (error) {
-      if (error?.code === 11000) throw failure(409, 'This character is already travelling.', 'transit');
+      if (error?.code === 11000) throw failure(409, 'This character is already travelling.', 'transit', steamId);
       throw error;
     }
-    // A character the ledger never saw lives here from now on, so the commit has a record to move.
-    if (!c) await this.setCharacter(m.network, p.steamId, name, 'home', server.id, '', 'first seen');
-    return { transferId: id, expiresAt: iso(now + RESERVE_MS), partChars: PART_CHARS, partsMax: PARTS_MAX };
+    return id;
+  }
+  // A party, and its vehicle, as one trip: a transfer per member (and one for the vehicle) under one group id.
+  // Every member is checked before anything is written, so a refusal names who and writes nothing. The destination
+  // sees none of the group's arrivals until every transfer in it is committed (commit marks the group ready).
+  async reserveGroup(server, p) {
+    await this.sweep();
+    const m = await this.membership(server.id);
+    if (!atLeast(m.beat?.version, GROUPS_FROM)) throw failure(409, 'Travelling as a party needs Highwatch Travel 0.6.0 or later on this server.', 'upgrade');
+    const list = Array.isArray(p?.members) ? p.members : [];
+    if (!list.length || list.length > PARTY_MAX) throw refuse(400, `A party is 1 to ${PARTY_MAX} players.`, 'invalid', 'members');
+    const members = list.map(x => ({ steamId: str(x?.steamId), name: clean(x?.name, 64) }));
+    if (members.some(x => !STEAM64.test(x.steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'members');
+    if (new Set(members.map(x => x.steamId)).size !== members.length) throw refuse(400, 'A player is in the party twice.', 'invalid', 'members');
+    const dest = await this.destination(server, m, p?.to, members.length);
+    if (!atLeast(dest.beat?.version, GROUPS_FROM)) throw failure(409, 'The destination needs Highwatch Travel 0.6.0 or later to take a party.', 'upgrade');
+    const known = new Map();
+    let routeId = '';
+    for (const x of members) {
+      known.set(x.steamId, await this.characterFree(m, server, x.steamId, x.steamId));
+      routeId = await this.routeFor(m, server, p, x.steamId, x.steamId);
+    }
+    const vehicleRoute = routeId ? (await this.route(m.network, routeId))?.vehicles === true : false;
+    if (p?.vehicle === true && routeId && !vehicleRoute) throw failure(409, 'This route does not take vehicles. Use a vehicle terminal.', 'noVehicles');
+    if (p?.vehicle !== true && vehicleRoute) throw failure(409, 'This is a vehicle route. Drive up to its vehicle terminal.', 'vehicleOnly');
+    const group = randomBytes(12).toString('hex');
+    const made = [];
+    try {
+      for (const x of members) made.push({ steamId: x.steamId, transferId: await this.insertTransfer(m, server, dest, { steamId: x.steamId, name: x.name, route: routeId, kind: 'character', group }) });
+      if (p?.vehicle === true) made.push({ steamId: `v${group}`, transferId: await this.insertTransfer(m, server, dest, { steamId: `v${group}`, name: 'Vehicle', route: routeId, kind: 'vehicle', group }), vehicle: true });
+    } catch (error) {
+      for (const t of made) if (await this.settleTransfer(t.transferId, 'reserved', { state: 'cancelled', reason: 'the party could not reserve' })) await this.c.parts.deleteMany({ transfer: t.transferId });
+      throw error;
+    }
+    for (const x of members) if (!known.get(x.steamId)) await this.setCharacter(m.network, x.steamId, x.name, 'home', server.id, '', 'first seen');
+    const vehicle = made.find(t => t.vehicle);
+    return { group, transfers: made.filter(t => !t.vehicle).map(({ steamId, transferId }) => ({ steamId, transferId })), vehicleTransferId: vehicle?.transferId ?? '', vehicleId: vehicle?.steamId ?? '', expiresAt: iso(this.now() + RESERVE_MS), partChars: PART_CHARS, partsMax: PARTS_MAX };
+  }
+  // Calls a party trip off: every transfer of the group that the destination has not been shown yet, committed ones
+  // too, and their characters back home here. Once the group is ready (shown to the destination) it is too late.
+  async cancelGroup(server, group) {
+    const all = await this.c.transfers.find({ group, fromServer: server.id }).toArray();
+    if (!all.length) throw refuse(404, 'Unknown party trip.', 'unknownGroup');
+    if (all.some(t => t.groupReady)) throw failure(409, 'The party is already on its way.', 'departed');
+    let cancelled = 0;
+    for (const t of all) {
+      const was = t.state;
+      if (was !== 'reserved' && was !== 'committed') continue;
+      if (!(await this.settleTransfer(t._id, was, { state: 'cancelled', reason: 'the party trip was called off' }))) continue;
+      await this.c.parts.deleteMany({ transfer: t._id });
+      if (was === 'committed' && t.kind !== 'vehicle') await this.setCharacter(t.network, t.steamId, t.name, 'home', server.id, '', 'trip called off');
+      cancelled++;
+    }
+    return { ok: true, cancelled };
   }
   async ownTransfer(server, id, state) {
     const t = await this.transfer(id);
-    if (t.fromServer !== server.id) throw failure(403, 'This transfer belongs to another server.');
+    if (t.fromServer !== server.id) throw refuse(403, 'This transfer belongs to another server.', 'notYours');
     if (state && t.state !== state) throw failure(409, `This transfer is ${t.state}.`, t.state);
     return t;
   }
   async part(server, id, p) {
     const t = await this.ownTransfer(server, id, 'reserved');
     if (t.expiresAt < this.now()) throw failure(409, 'The reservation lapsed.', 'lapsed');
-    if (!Number.isInteger(p?.n) || p.n < 0 || p.n >= PARTS_MAX) throw failure(400, `A part number is 0 to ${PARTS_MAX - 1}.`);
-    if (typeof p?.data !== 'string' || !p.data.length || Buffer.byteLength(p.data, 'utf8') > PART_CHARS) throw failure(400, `A part is 1 to ${PART_CHARS} bytes.`);
+    if (!Number.isInteger(p?.n) || p.n < 0 || p.n >= PARTS_MAX) throw refuse(400, `A part number is 0 to ${PARTS_MAX - 1}.`, 'invalid', 'n');
+    if (typeof p?.data !== 'string' || !p.data.length || Buffer.byteLength(p.data, 'utf8') > PART_CHARS) throw refuse(400, `A part is 1 to ${PART_CHARS} bytes.`, 'invalid', 'data');
     await this.c.parts.updateOne({ _id: `${t._id}:${p.n}` }, { $set: { transfer: t._id, n: p.n, body: p.data } }, { upsert: true });
     return { ok: true, n: p.n };
   }
@@ -412,15 +502,24 @@ export class TravelStore {
     let doc = null;
     try { doc = JSON.parse(text); } catch { doc = null; }
     if (!doc || typeof doc !== 'object' || doc.steamId !== t.steamId) throw failure(400, 'The snapshot is not a character snapshot for this player.', 'snapshot');
-    const c = await this.character(t.network, t.steamId);
-    if (!c || c.home !== server.id || c.state !== 'home') throw failure(409, 'This character does not live on this server.', 'notHome');
+    const vehicle = t.kind === 'vehicle';
+    if (!vehicle) {
+      const c = await this.character(t.network, t.steamId);
+      if (!c || c.home !== server.id || c.state !== 'home') throw failure(409, 'This character does not live on this server.', 'notHome');
+    }
     const now = this.now();
     const sha256 = createHash('sha256').update(text).digest('hex');
     const r = await this.c.transfers.updateOne({ _id: t._id, state: 'reserved' }, { $set: { state: 'committed', committedAt: now, expiresAt: now + TRANSIT_MS, parts: parts.length, length: bytes, sha256, destToken: token(), backToken: token() } });
-    if (r.modifiedCount !== 1) throw failure(409, 'This transfer changed while committing.');
-    await this.setCharacter(t.network, t.steamId, t.name, 'transit', server.id, t._id, 'departed', t.toServer);
-    this.wake(t.toServer);
-    return { ok: true, transferId: t._id, sha256, expiresAt: iso(now + TRANSIT_MS) };
+    if (r.modifiedCount !== 1) throw refuse(409, 'This transfer changed while committing.', 'changed');
+    if (!vehicle) await this.setCharacter(t.network, t.steamId, t.name, 'transit', server.id, t._id, 'departed', t.toServer);
+    // A party is shown to the destination only when every transfer in it is committed, and together.
+    let groupReady = !t.group;
+    if (t.group && !(await this.c.transfers.countDocuments({ group: t.group, state: { $ne: 'committed' } }))) {
+      await this.c.transfers.updateMany({ group: t.group }, { $set: { groupReady: true } });
+      groupReady = true;
+    }
+    if (groupReady) this.wake(t.toServer);
+    return { ok: true, transferId: t._id, sha256, expiresAt: iso(now + TRANSIT_MS), groupReady };
   }
   async cancel(server, id) {
     const t = await this.ownTransfer(server, id, 'reserved');
@@ -431,9 +530,9 @@ export class TravelStore {
   // source's once the transfer is past its time. Answers the snapshot text exactly as committed.
   async snapshot(id, tok) {
     const t = await this.transfer(id);
-    if (!TOKEN.test(str(tok)) || t.state !== 'committed') throw failure(404, 'Unknown snapshot.');
+    if (!TOKEN.test(str(tok)) || t.state !== 'committed') throw refuse(404, 'Unknown snapshot.', 'unknownSnapshot');
     const dest = tok === t.destToken, back = tok === t.backToken && t.expiresAt < this.now();
-    if (!dest && !back) throw failure(404, 'Unknown snapshot.');
+    if (!dest && !back) throw refuse(404, 'Unknown snapshot.', 'unknownSnapshot');
     return this.joined(t._id);
   }
   // The source asks to take an unclaimed character back. Gives it the download path for its own snapshot.
@@ -447,11 +546,12 @@ export class TravelStore {
   async land(server, id, p) {
     const t = await this.transfer(id);
     const asReturn = p?.as === 'return';
-    if (asReturn ? t.fromServer !== server.id : t.toServer !== server.id) throw failure(403, 'This transfer is not yours to claim.');
+    if (asReturn ? t.fromServer !== server.id : t.toServer !== server.id) throw refuse(403, 'This transfer is not yours to claim.', 'notYours');
     if (asReturn && t.expiresAt >= this.now()) throw failure(409, 'The destination still has time to claim this character.', 'notExpired');
     if (Number.isInteger(p?.length) && p.length !== t.length) throw failure(409, 'The snapshot you hold is not the one committed.', 'length');
+    if (!asReturn && t.group && !t.groupReady) throw failure(409, 'The rest of the party has not left yet.', 'notReady');
     if (!(await this.settleTransfer(t._id, 'committed', { state: asReturn ? 'returned' : 'landed', settledBy: server.id }))) throw failure(409, `This transfer is ${(await this.transfer(id)).state}; do not build the character.`, 'claimed');
-    await this.setCharacter(t.network, t.steamId, t.name, 'home', server.id, '', asReturn ? 'returned' : 'arrived');
+    if (t.kind !== 'vehicle') await this.setCharacter(t.network, t.steamId, t.name, 'home', server.id, '', asReturn ? 'returned' : 'arrived');
     await this.c.parts.deleteMany({ transfer: t._id });
     // Held luggage: classes this server has no config for, so they could not be built. Kept, never deleted.
     const held = new Map();
@@ -462,9 +562,9 @@ export class TravelStore {
   // Global chat: queued for every other member of the network.
   async chat(server, p) {
     const m = await this.membership(server.id);
-    if (!STEAM64.test(str(p?.steamId))) throw failure(400, 'Invalid Steam64.');
+    if (!STEAM64.test(str(p?.steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
     const text = clean(p?.text, CHAT_CHARS);
-    if (!text) throw failure(400, 'Empty message.');
+    if (!text) throw refuse(400, 'Empty message.', 'invalid', 'text');
     const body = { steamId: p.steamId, name: clean(p?.name, 64), text, from: server.id, at: iso(this.now()) };
     for (const r of await this.c.members.find({ network: m.network, _id: { $ne: server.id } }, { projection: { _id: 1 } }).toArray()) await this.enqueue(r._id, 'chat', body);
     return { ok: true };
@@ -480,24 +580,56 @@ export class TravelStore {
     }
     return { networks: out };
   }
+  // Everything the console's landing page shows, in one read: every registered server and which network it is in,
+  // and per network its servers (with mod version and beat age), routes, character counts by state, held characters,
+  // held luggage still kept, and every live trip. A committed trip past its transit time is `stuck`: nobody claimed it,
+  // and only the server it left can take it back. A reservation past its time is `lapsing`: the next sweep ends it.
+  async overview() {
+    const now = this.now();
+    const members = await this.c.members.find({}).toArray();
+    const memberOf = new Map(members.map(m => [m._id, m]));
+    const servers = (await this.c.servers.find({}, { projection: { keyHash: 0 } }).sort({ name: 1 }).toArray())
+      .map(s => ({ id: s._id, name: s.name, createdAt: iso(s.createdAt), network: memberOf.get(s._id)?.network ?? '' }));
+    const networks = [];
+    for (const n of await this.c.networks.find({}).sort({ name: 1 }).toArray()) {
+      const view = await this.network(n._id);
+      for (const s of view.servers) {
+        const m = memberOf.get(s.id);
+        s.version = str(m?.beat?.version);
+        s.beatAgeSec = m?.beatAt ? Math.max(0, Math.round((now - m.beatAt) / 1000)) : null;
+      }
+      const characters = { home: 0, transit: 0, held: 0 };
+      for (const r of await this.c.characters.aggregate([{ $match: { network: n._id } }, { $group: { _id: '$state', n: { $sum: 1 } } }]).toArray()) characters[r._id] = r.n;
+      const transfers = (await this.c.transfers.find({ network: n._id, state: { $in: LIVE } }).sort({ createdAt: 1 }).limit(200).toArray())
+        .map(t => ({ id: t._id, steamId: t.steamId, name: t.name, from: t.fromServer, to: t.toServer, route: t.route ?? '', state: t.state, kind: t.kind ?? 'character', group: t.group ?? '', createdAt: iso(t.createdAt), committedAt: iso(t.committedAt), expiresAt: iso(t.expiresAt), stuck: t.state === 'committed' && t.expiresAt < now, lapsing: t.state === 'reserved' && t.expiresAt < now }));
+      const held = (await this.c.characters.find({ network: n._id, state: 'held' }).sort({ updatedAt: -1 }).limit(100).toArray())
+        .map(c => ({ steamId: c.steamId, name: c.name, state: c.state, home: c.home, updatedAt: iso(c.updatedAt) }));
+      const luggage = await this.c.held.countDocuments({ network: n._id, releasedAt: null });
+      networks.push({ ...view, characters, transfers, held, luggage });
+    }
+    return { at: iso(now), servers, networks };
+  }
   async createNetwork(p) {
     const name = clean(p?.name, 64);
-    if (!name) throw failure(400, 'Name the network.');
+    if (!name) throw refuse(400, 'Name the network.', 'invalid', 'name');
     const id = randomBytes(8).toString('hex');
     await this.c.networks.insertOne({ _id: id, name, settings: {}, createdAt: this.now() });
     return this.network(id);
   }
-  async netOrFail(id) { if (!NETWORK_ID.test(str(id)) || !(await this.c.networks.findOne({ _id: id }, { projection: { _id: 1 } }))) throw failure(404, 'Unknown travel network.'); return id; }
+  async netOrFail(id) { if (!NETWORK_ID.test(str(id)) || !(await this.c.networks.findOne({ _id: id }, { projection: { _id: 1 } }))) throw refuse(404, 'Unknown travel network.', 'unknownNetwork'); return id; }
   async settings(id, p) {
     await this.netOrFail(id);
     const cur = (await this.c.networks.findOne({ _id: id })).settings ?? {};
     const set = {};
-    if (p?.name !== undefined) { const name = clean(p.name, 64); if (!name) throw failure(400, 'Name the network.'); set.name = name; }
+    if (p?.name !== undefined) { const name = clean(p.name, 64); if (!name) throw refuse(400, 'Name the network.', 'invalid', 'name'); set.name = name; }
     if (p?.startServer !== undefined) {
       const s = str(p.startServer);
-      if (s && !(await this.c.members.findOne({ _id: s, network: id }))) throw failure(400, 'The start server must be a member of this network.');
+      if (s && !(await this.c.members.findOne({ _id: s, network: id }))) throw refuse(400, 'The start server must be a member of this network.', 'invalid', 'startServer');
       cur.startServer = s;
     }
+    // In-game admin: the member servers' admins may set up routes, servers and characters from the game's admin panel.
+    // Only the network's owner turns it on (owner API or travel-admin), never a game server.
+    if (p?.inGameAdmin !== undefined) cur.inGameAdmin = p.inGameAdmin === true;
     await this.c.networks.updateOne({ _id: id }, { $set: { ...set, settings: cur } });
     return this.network(id);
   }
@@ -506,16 +638,19 @@ export class TravelStore {
     const server = str(p?.server);
     await this.serverRecord(server);
     const address = str(p?.address).trim(), port = p?.port;
-    if (!ADDRESS.test(address)) throw failure(400, 'Give the address players connect to (IP or host name).');
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw failure(400, 'Give the game port.');
+    if (!ADDRESS.test(address)) throw refuse(400, 'Give the address players connect to (IP or host name).', 'invalid', 'address');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw refuse(400, 'Give the game port.', 'invalid', 'port');
     const other = await this.c.members.findOne({ _id: server });
-    if (other && other.network !== id) throw failure(409, 'That server is in another travel network.');
+    if (other && other.network !== id) throw refuse(409, 'That server is in another travel network.', 'otherNetwork');
     await this.c.members.updateOne({ _id: server }, { $set: { network: id, label: clean(p?.label, 64), address, port, open: p?.open !== false }, $setOnInsert: { beatAt: null, beat: {} } }, { upsert: true });
     return this.network(id);
   }
   async removeMember(id, server) {
     await this.netOrFail(id);
-    if (await this.c.transfers.findOne({ network: id, state: { $in: LIVE }, $or: [{ fromServer: server }, { toServer: server }] })) throw failure(409, 'A character is travelling to or from that server. Wait for it to land.');
+    if (await this.c.transfers.findOne({ network: id, state: { $in: LIVE }, $or: [{ fromServer: server }, { toServer: server }] })) throw refuse(409, 'A character is travelling to or from that server. Wait for it to land.', 'travelling');
+    // A route to or from a server that is not a member would show on the board and fail on every reserve.
+    const routes = (await this.c.routes.find({ network: id, $or: [{ 'body.from': server }, { 'body.to': server }] }).toArray()).map(r => r.body.name);
+    if (routes.length) throw failure(409, `Remove its routes first: ${routes.join(', ')}.`, 'routes');
     await this.c.members.deleteOne({ _id: server, network: id });
     return this.network(id);
   }
@@ -528,8 +663,11 @@ export class TravelStore {
   }
   async history(id, steamId) {
     await this.netOrFail(id);
-    if (!STEAM64.test(str(steamId))) throw failure(400, 'Invalid Steam64.');
+    if (!STEAM64.test(str(steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
+    // The character's own record too (null when the network never saw it), so one call is enough for a detail page.
+    const c = await this.character(id, steamId);
     return {
+      character: c ? { steamId: c.steamId, name: c.name, state: c.state, home: c.home, transfer: c.transfer, updatedAt: iso(c.updatedAt) } : null,
       ledger: (await this.c.ledger.find({ network: id, steamId }).sort({ seq: -1 }).limit(100).toArray()).map(r => ({ state: r.state, home: r.home, to: r.toServer, reason: r.reason, at: iso(r.at) })),
       transfers: (await this.c.transfers.find({ network: id, steamId }).sort({ createdAt: -1 }).limit(50).toArray()).map(t => ({ id: t._id, from: t.fromServer, to: t.toServer, route: t.route ?? '', state: t.state, createdAt: iso(t.createdAt), committedAt: iso(t.committedAt), expiresAt: iso(t.expiresAt), settledAt: iso(t.settledAt), settledBy: t.settledBy, length: t.length, sha256: t.sha256, reason: t.reason })),
       held: (await this.c.held.find({ network: id, steamId }).sort({ _id: -1 }).limit(200).toArray()).map(h => ({ id: h._id, transfer: h.transfer, server: h.server, className: h.className, count: h.count, at: iso(h.at), releasedAt: iso(h.releasedAt) })),
@@ -538,37 +676,118 @@ export class TravelStore {
   // Staff hold or release a character, or move its home (only while it is not travelling).
   async setState(id, steamId, p, actor = 'Staff') {
     await this.netOrFail(id);
-    if (!STEAM64.test(str(steamId))) throw failure(400, 'Invalid Steam64.');
+    if (!STEAM64.test(str(steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
     const c = await this.character(id, steamId);
-    if (c?.state === 'transit') throw failure(409, 'This character is travelling. Wait for it to land or return.');
+    if (c?.state === 'transit') throw refuse(409, 'This character is travelling. Wait for it to land or return.', 'transit');
     const state = p?.state === 'held' ? 'held' : 'home';
     const home = str(p?.home) || c?.home || '';
-    if (!(await this.c.members.findOne({ _id: home, network: id }))) throw failure(400, 'Choose a home server in this network.');
+    if (!(await this.c.members.findOne({ _id: home, network: id }))) throw refuse(400, 'Choose a home server in this network.', 'invalid', 'home');
     await this.setCharacter(id, steamId, c?.name ?? '', state, home, '', `${state === 'held' ? 'held' : 'set'} by ${clean(actor, 64) || 'Staff'}`);
     const now = await this.character(id, steamId);
     return { steamId: now.steamId, name: now.name, state: now.state, home: now.home, transfer: now.transfer, updatedAt: iso(now.updatedAt) };
+  }
+  // --- in-game admin --------------------------------------------------------------------------------
+  // The admin panel of a member server. The game server has checked `staff` against its own admin list; the network
+  // must have inGameAdmin on. Routes may only be changed when they start or end on the calling server. Every change
+  // goes to the audit collection with the staff member and the server.
+  async admin(server, p) {
+    const m = await this.membership(server.id);
+    const net = await this.c.networks.findOne({ _id: m.network });
+    if (net?.settings?.inGameAdmin !== true) throw failure(409, 'In-game admin is off for this network. The network owner turns it on with travel-admin network admin <network> on.', 'adminOff');
+    const staffId = str(p?.staff?.steamId), staffName = clean(p?.staff?.name, 64);
+    if (!STEAM64.test(staffId)) throw refuse(400, 'Name the staff member (Steam64).', 'invalid', 'staff');
+    const actor = `${staffName || staffId} on ${(await this.serverView(m)).name}`;
+    const id = m.network;
+    const audit = async (action, detail) => this.c.audit.insertOne({ _id: await this.next('audit'), network: id, server: server.id, staffId, staffName, action, detail, at: this.now() });
+    const ownRoute = async routeId => {
+      const r = await this.route(id, str(routeId));
+      if (!r) throw failure(404, 'Unknown route.', 'unknownRoute');
+      if (r.from !== server.id && r.to !== server.id) throw failure(409, 'Change this route from one of its own servers.', 'notYours');
+      return r;
+    };
+    const action = str(p?.action);
+    if (action === 'overview') {
+      const n = await this.network(id);
+      const servers = [];
+      for (const mem of await this.c.members.find({ network: id }).sort({ label: 1, _id: 1 }).toArray()) servers.push({ ...(await this.serverView(mem)), version: str(mem.beat?.version) });
+      return { network: n.network, servers, routes: n.routes, me: server.id };
+    }
+    if (action === 'route.save') {
+      const body = p?.route ?? {};
+      if (body.from !== server.id && body.to !== server.id) throw failure(409, 'A route set up here must start or end on this server.', 'notYours');
+      if (body.id) await ownRoute(body.id);
+      const out = await this.saveRoute(id, body);
+      await audit('route.save', { route: body.id || out.routes.at(-1)?.id || '', name: clean(body.name, 48) });
+      return { routes: out.routes };
+    }
+    if (action === 'route.remove') {
+      const r = await ownRoute(p?.routeId);
+      const out = await this.removeRoute(id, r.id);
+      await audit('route.remove', { route: r.id, name: r.name });
+      return { routes: out.routes };
+    }
+    if (action === 'member.open') {
+      const mem = await this.c.members.findOne({ _id: str(p?.server), network: id });
+      if (!mem) throw failure(404, 'That server is not in this network.', 'unknownServer');
+      await this.c.members.updateOne({ _id: mem._id }, { $set: { open: p?.open === true } });
+      await audit('member.open', { server: mem._id, open: p?.open === true });
+      return { servers: (await this.network(id)).servers };
+    }
+    if (action === 'network.startServer') {
+      const out = await this.settings(id, { startServer: str(p?.server) });
+      await audit('network.startServer', { server: str(p?.server) });
+      return { network: out.network };
+    }
+    if (action === 'characters') return { characters: (await this.characters(id, { q: str(p?.q), limit: Math.min(100, Number(p?.limit) || 50) })).characters };
+    if (action === 'character') {
+      if (!STEAM64.test(str(p?.steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
+      const c = await this.character(id, p.steamId);
+      if (!c) throw failure(404, 'The network has never seen this character.', 'unknownCharacter');
+      const h = await this.history(id, p.steamId);
+      return { character: { steamId: c.steamId, name: c.name, state: c.state, home: c.home, transfer: c.transfer, updatedAt: iso(c.updatedAt) }, trips: h.transfers.slice(0, 10), held: h.held.slice(0, 50) };
+    }
+    if (action === 'character.hold' || action === 'character.release') {
+      const out = await this.setState(id, str(p?.steamId), { state: action === 'character.hold' ? 'held' : 'home', home: str(p?.home) }, actor);
+      await audit(action, { steamId: str(p?.steamId), home: out.home });
+      return { character: out };
+    }
+    if (action === 'send') {
+      const out = await this.send(id, str(p?.steamId), str(p?.to), actor);
+      await audit('send', { steamId: str(p?.steamId), to: str(p?.to) });
+      return out;
+    }
+    throw failure(400, 'Unknown admin action.', 'unknownAction');
+  }
+  // `server` and `staff` (a Steam64 or a name) narrow it down; the console filters with them.
+  async auditOf(id, limit = 100, { server = '', staff = '' } = {}) {
+    await this.netOrFail(id);
+    const filter = { network: id };
+    if (server) filter.server = str(server);
+    if (staff) filter.$or = [{ staffId: str(staff) }, { staffName: str(staff) }];
+    return (await this.c.audit.find(filter).sort({ _id: -1 }).limit(Math.min(500, limit)).toArray()).map(a => ({ id: a._id, server: a.server, staffId: a.staffId, staffName: a.staffName, action: a.action, detail: a.detail, at: iso(a.at) }));
   }
   async saveRoute(id, p) {
     await this.netOrFail(id);
     const r = await this.parseRoute(id, p);
     const exists = await this.c.routes.findOne({ _id: r.id }, { projection: { network: 1 } });
-    if (exists && exists.network !== id) throw failure(409, 'That route id belongs to another network.');
-    if (!exists && await this.c.routes.countDocuments({ network: id }) >= ROUTES_MAX) throw failure(409, `A network has at most ${ROUTES_MAX} routes.`);
+    if (exists && exists.network !== id) throw refuse(409, 'That route id belongs to another network.', 'otherNetwork');
+    if (!exists && await this.c.routes.countDocuments({ network: id }) >= ROUTES_MAX) throw refuse(409, `A network has at most ${ROUTES_MAX} routes.`, 'routesMax');
     await this.c.routes.updateOne({ _id: r.id }, { $set: { network: id, body: r }, $setOnInsert: { createdAt: this.now() } }, { upsert: true });
     return this.network(id);
   }
   async removeRoute(id, routeId) {
     await this.netOrFail(id);
-    await this.c.routes.deleteOne({ _id: routeId, network: id });
+    const r = await this.c.routes.deleteOne({ _id: str(routeId), network: id });
+    if (!r.deletedCount) throw refuse(404, 'Unknown route.', 'unknownRoute');
     return this.network(id);
   }
   // Staff send a character to another server: queued to its home server, which runs the trip as if the player asked.
   async send(id, steamId, to, actor = 'Staff') {
     await this.netOrFail(id);
-    if (!STEAM64.test(str(steamId))) throw failure(400, 'Invalid Steam64.');
+    if (!STEAM64.test(str(steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
     const c = await this.character(id, steamId);
-    if (!c || c.state !== 'home') throw failure(409, 'Only a character at home on a server can be sent.');
-    if (!(await this.c.members.findOne({ _id: str(to), network: id })) || to === c.home) throw failure(400, 'Choose another server in this network.');
+    if (!c || c.state !== 'home') throw refuse(409, 'Only a character at home on a server can be sent.', 'notHome');
+    if (!(await this.c.members.findOne({ _id: str(to), network: id })) || to === c.home) throw refuse(400, 'Choose another server in this network.', 'invalid', 'to');
     await this.enqueue(c.home, 'send', { steamId, to, by: clean(actor, 64) || 'Staff' });
     return { ok: true, queuedOn: c.home };
   }
