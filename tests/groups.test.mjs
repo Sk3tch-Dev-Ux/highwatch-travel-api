@@ -133,3 +133,13 @@ test('parties need 0.6.0 on both ends; older destinations get no group keys', as
   const arrival = (await f.mod(b.key, '/travel/inbox', { wait: 0 })).body.arrivals[0];
   assert.equal('group' in arrival, false); assert.equal('kind' in arrival, false);
 });
+
+test('a server with routes cannot leave the network until its routes are removed', async t => {
+  const f = await fixture(t);
+  const { id, a, b } = await network(f);
+  const route = (await f.staff('POST', `/v1/networks/${id}/routes`, { name: 'North line', from: a.id, to: b.id })).body.routes[0];
+  const refused = await f.staff('DELETE', `/v1/networks/${id}/members/${b.id}`);
+  assert.equal(refused.status, 409); assert.match(refused.body.error, /North line/);
+  assert.equal((await f.staff('DELETE', `/v1/networks/${id}/routes/${route.id}`)).status, 200);
+  assert.equal((await f.staff('DELETE', `/v1/networks/${id}/members/${b.id}`)).status, 200);
+});

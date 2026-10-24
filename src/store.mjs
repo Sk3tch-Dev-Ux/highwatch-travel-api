@@ -604,6 +604,9 @@ export class TravelStore {
   async removeMember(id, server) {
     await this.netOrFail(id);
     if (await this.c.transfers.findOne({ network: id, state: { $in: LIVE }, $or: [{ fromServer: server }, { toServer: server }] })) throw failure(409, 'A character is travelling to or from that server. Wait for it to land.');
+    // A route to or from a server that is not a member would show on the board and fail on every reserve.
+    const routes = (await this.c.routes.find({ network: id, $or: [{ 'body.from': server }, { 'body.to': server }] }).toArray()).map(r => r.body.name);
+    if (routes.length) throw failure(409, `Remove its routes first: ${routes.join(', ')}.`, 'routes');
     await this.c.members.deleteOne({ _id: server, network: id });
     return this.network(id);
   }
