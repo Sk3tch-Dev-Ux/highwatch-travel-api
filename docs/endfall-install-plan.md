@@ -85,6 +85,8 @@ shows `Running`.
   `GET http://127.0.0.1:6070/readyz -> 200 {"status":"ok","db":"ok"}`.
 - `npm run admin -- doctor` shows `OK` for token, mongodb (`connected as travel@highwatch_travel`), indexes and api.
   A `WARN network no network yet` is expected now.
+- The console answers at http://127.0.0.1:6070/console/ and opens with the admin token from the secrets file. From
+  here on, every `npm run admin` step below can be done there instead ([docs/console.md](console.md)).
 - `scripts\windows\secrets-*.txt` no longer exists.
 - Survives a restart: run `.\scripts\windows\stop-api.ps1`, then
   `Start-ScheduledTask -TaskPath '\Highwatch\' -TaskName 'Highwatch Travel API'`. Within a minute
