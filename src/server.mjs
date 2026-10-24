@@ -57,7 +57,7 @@ const equalText = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(
 export function routePattern(p) {
   let m;
   if (['/healthz', '/readyz'].includes(p)) return p;
-  if ((m = /^\/travel\/(beat|inbox|ledger|quote|home|chat|transfers)(?:\/[a-f0-9]{24}\/([a-z]+))?$/.exec(p))) return m[2] ? `/travel/transfers/:id/${m[2]}` : `/travel/${m[1]}`;
+  if ((m = /^\/travel\/(beat|inbox|ledger|quote|home|chat|transfers|groups)(?:\/[a-f0-9]{24}\/([a-z]+))?$/.exec(p))) return m[2] ? `/travel/${m[1]}/:id/${m[2]}` : `/travel/${m[1]}`;
   if (/^\/travel\/snapshot\//.test(p)) return '/travel/snapshot/:id/:token';
   if (/^\/v1\/servers/.test(p)) return '/v1/servers';
   if ((m = /^\/v1\/networks(?:\/[a-f0-9]{16}(?:\/([a-z]+))?)?/.exec(p))) return m[0] === '/v1/networks' ? m[0] : `/v1/networks/:id${m[1] ? `/${m[1]}` : ''}`;
@@ -116,10 +116,10 @@ export async function createApi(config, { now = Date.now, log = console.error, c
         if (!TRANSFER_ID.test(snap[1]) || !TOKEN.test(snap[2])) throw failure(404, 'Unknown snapshot.');
         finish(200, await store.snapshot(snap[1], snap[2]), 'application/json'); return;
       }
-      const travel = /^\/travel\/(beat|inbox|ledger|quote|home|chat|transfers)(?:\/([a-f0-9]{24})\/(part|commit|cancel|reclaim|land))?$/.exec(p);
+      const travel = /^\/travel\/(beat|inbox|ledger|quote|home|chat|transfers|groups)(?:\/([a-f0-9]{24})\/(part|commit|cancel|reclaim|land))?$/.exec(p);
       if (travel && req.method === 'POST') {
         const [, verb, tid, step] = travel;
-        if (tid && verb !== 'transfers') throw failure(404, 'Not found.');
+        if (tid && verb !== 'transfers' && !(verb === 'groups' && step === 'cancel')) throw failure(404, 'Not found.');
         const max = step === 'part' ? PART_CHARS * 2 + 4096 : verb === 'beat' ? 65536 : 8192;
         const { key, payload } = await keyedBody(req, max);
         const srv = await serverFor(req, key);
@@ -132,6 +132,7 @@ export async function createApi(config, { now = Date.now, log = console.error, c
             if (verb === 'quote') return store.quote(srv, payload);
             if (verb === 'home') return store.claimHome(srv, payload);
             if (verb === 'chat') return store.chat(srv, payload);
+            if (verb === 'groups') return tid ? store.cancelGroup(srv, tid) : store.reserveGroup(srv, payload);
             if (!tid) return store.reserve(srv, payload);
             if (step === 'part') return store.part(srv, tid, payload);
             if (step === 'commit') return store.commit(srv, tid, payload);
@@ -141,7 +142,7 @@ export async function createApi(config, { now = Date.now, log = console.error, c
           });
         } catch (error) {
           if (![400, 404, 409].includes(error.status)) throw error;
-          send(200, { ok: false, code: error.code || String(error.status), error: error.message }); return;
+          send(200, { ok: false, code: error.code || String(error.status), error: error.message, who: error.who || '' }); return;
         }
         send(200, { ok: true, ...result }); return;
       }

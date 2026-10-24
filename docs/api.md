@@ -27,10 +27,22 @@ address (429) and an oversized body (413) keep their real status.
 | `POST /travel/transfers/:id/reclaim` | | after the transit time: the source's own download path |
 | `POST /travel/transfers/:id/land` | length, as (`return` for the source), held (classes not built) | **the one claim** |
 | `GET /travel/snapshot/:id/:token` | | the snapshot text. The token is one-time per side; no key in the URL. |
+| `POST /travel/groups` | members `[{steamId, name}]` (1 to 4), to, route (optional), vehicle (bool) | a party trip: group, transfers `[{steamId, transferId}]`, vehicleTransferId and vehicleId when vehicle, partChars, partsMax. A refusal names the member in `who` and reserves nothing. From mod 0.6.0, on both ends. |
+| `POST /travel/groups/:group/cancel` | | calls the party trip off, committed members too, and puts their characters back home. Refused (`departed`) once the group is ready. |
 
 Refusal codes: `notMember`, `notHome`, `transit`, `held`, `offline`, `closed`, `full`, `terje`, `lapsed`,
 `parts`, `length`, `claimed`, `notExpired`, `startServer`, `unknownServer`, `unknownRoute`, `routeClosed`,
-`cooldown`, `snapshot`, `upgrade`.
+`cooldown`, `snapshot`, `upgrade`, `notReady`, `departed`, `noVehicles`. A refusal may name a party member in `who`.
+
+### Parties and vehicles (mod 0.6.0)
+
+A party trip is one transfer per member, plus one for the vehicle when there is one, under one `group` id. The
+vehicle's transfer has the synthetic id `v<group>` where a character has its Steam64, and its snapshot carries that
+id as its `steamId`; it has no ledger row. Each transfer takes its parts and commit as a solo trip does. The
+destination sees none of the group until every transfer in it is committed: the commit that completes the group
+answers `groupReady: true`, and only then does the source send anyone. Arrivals to a 0.6.0 destination carry
+`group` and `kind` (`character` or `vehicle`). A member the destination never claims goes back to the source after
+the transit time, like a solo trip; the others keep their landing.
 
 ### Timing the mod relies on
 
@@ -100,6 +112,7 @@ characters are Steam64 ids.
 | `hours` | In-game hours, `"08-20"` or overnight `"22-04"`. Empty for always. |
 | `cooldownMin` | Minutes since the character's last departure on any trip. |
 | `waitSeconds` | A frozen countdown before the trip, 0 to 120. |
+| `vehicles` | A party may take this route in a car. Default false. Mods older than 0.6.0 never see it. |
 
 ## Health
 
