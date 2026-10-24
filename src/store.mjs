@@ -361,6 +361,8 @@ export class TravelStore {
     const dest = await this.destination(server, m, p?.to, 1);
     const c = await this.characterFree(m, server, p.steamId);
     const routeId = await this.routeFor(m, server, p, p.steamId);
+    // A vehicle route runs between vehicle terminals and takes cars only (owner, 2026-10-24): nobody goes on foot.
+    if (routeId && (await this.route(m.network, routeId))?.vehicles) throw failure(409, 'This is a vehicle route. Drive up to its vehicle terminal.', 'vehicleOnly');
     const id = await this.insertTransfer(m, server, dest, { steamId: p.steamId, name: clean(p.name, 64), route: routeId, kind: 'character', group: null });
     // A character the ledger never saw lives here from now on, so the commit has a record to move.
     if (!c) await this.setCharacter(m.network, p.steamId, clean(p.name, 64), 'home', server.id, '', 'first seen');
@@ -433,7 +435,9 @@ export class TravelStore {
       known.set(x.steamId, await this.characterFree(m, server, x.steamId, x.steamId));
       routeId = await this.routeFor(m, server, p, x.steamId, x.steamId);
     }
-    if (p?.vehicle === true && routeId && !(await this.route(m.network, routeId))?.vehicles) throw failure(409, 'This route does not take vehicles.', 'noVehicles');
+    const vehicleRoute = routeId ? (await this.route(m.network, routeId))?.vehicles === true : false;
+    if (p?.vehicle === true && routeId && !vehicleRoute) throw failure(409, 'This route does not take vehicles. Use a vehicle terminal.', 'noVehicles');
+    if (p?.vehicle !== true && vehicleRoute) throw failure(409, 'This is a vehicle route. Drive up to its vehicle terminal.', 'vehicleOnly');
     const group = randomBytes(12).toString('hex');
     const made = [];
     try {

@@ -117,6 +117,9 @@ test('a car takes only a route marked vehicles; mods older than 0.6.0 never see 
   const road = (await f.staff('POST', `/v1/networks/${id}/routes`, { name: 'Road', from: a.id, to: b.id, vehicles: true })).body.routes.find(r => r.name === 'Road');
   assert.equal(road.vehicles, true);
   assert.equal((await f.mod(a.key, '/travel/groups', { members: party.slice(0, 1), to: b.id, route: road.id, vehicle: true })).body.ok, true);
+  // A vehicle route is for cars only: nobody on foot, alone or as a party.
+  assert.equal((await f.mod(a.key, '/travel/transfers', { steamId: TWO, name: 'Two', to: b.id, route: road.id })).body.code, 'vehicleOnly');
+  assert.equal((await f.mod(a.key, '/travel/groups', { members: party.slice(1, 2), to: b.id, route: road.id })).body.code, 'vehicleOnly');
   const old = (await f.mod(a.key, '/travel/beat', { players: [], maxPlayers: 60, world: 'x', terje: 'skills:v1', version: '0.5.0' })).body.routes[0];
   assert.equal('vehicles' in old, false);
 });

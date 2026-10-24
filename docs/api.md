@@ -34,7 +34,7 @@ address (429) and an oversized body (413) keep their real status.
 Refusal codes: `notMember`, `notHome`, `transit`, `held`, `offline`, `closed`, `full`, `terje`, `lapsed`,
 `parts`, `length`, `claimed`, `notExpired`, `startServer`, `unknownServer`, `unknownRoute`, `routeClosed`,
 `cooldown`, `snapshot`, `upgrade`, `notReady`, `departed`, `noVehicles`, `adminOff`, `notYours`, `unknownAction`,
-`unknownCharacter`, `routes`. A refusal may name a party member in `who`.
+`unknownCharacter`, `routes`, `vehicleOnly`. A refusal may name a party member in `who`.
 
 ### Parties and vehicles (mod 0.6.0)
 
@@ -135,7 +135,7 @@ characters are Steam64 ids.
 | `hours` | In-game hours, `"08-20"` or overnight `"22-04"`. Empty for always. |
 | `cooldownMin` | Minutes since the character's last departure on any trip. |
 | `waitSeconds` | A frozen countdown before the trip, 0 to 120. |
-| `vehicles` | A party may take this route in a car. Default false. Mods older than 0.6.0 never see it. |
+| `vehicles` | A vehicle route: it runs between vehicle terminals and takes a party in a car only, never anyone on foot (`vehicleOnly`); a car on a route without it is refused (`noVehicles`). Default false. Mods older than 0.6.0 never see it. |
 
 ## Health
 
