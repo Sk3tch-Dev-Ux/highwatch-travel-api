@@ -256,7 +256,11 @@ export class TravelStore {
       if (!this.online(m)) continue;
       for (const pl of m.beat?.players ?? []) roster.push({ steamId: pl.steamId, name: pl.name, server: m._id });
     }
-    return { network: { id: n._id, name: n.name, settings: n.settings ?? {} }, servers, players: roster, routes: await this.routes(networkId, self === '' || await this.readsLabels(self), self === '' || await this.readsMoney(self), self === '' || await this.readsGroups(self)) };
+    const groups = self === '' || await this.readsGroups(self);
+    // inGameAdmin is a 0.6.0 key: an older mod reads settings into a class without it.
+    const { inGameAdmin = false, ...older } = n.settings ?? {};
+    const settings = groups ? { ...older, inGameAdmin } : older;
+    return { network: { id: n._id, name: n.name, settings }, servers, players: roster, routes: await this.routes(networkId, self === '' || await this.readsLabels(self), self === '' || await this.readsMoney(self), groups) };
   }
 
   // The inbox: arrivals for this server, queued messages after its cursor and ledger changes after its ledger

@@ -76,3 +76,13 @@ test('an admin opens and closes servers, sets the start server, and holds, relea
   assert.ok(ledger.some(r => /Vis on Chernarus/.test(r.reason)), JSON.stringify(ledger));
   assert.equal((await admin(f, a, 'nonsense')).code, 'unknownAction');
 });
+
+test('the in-game admin switch reaches 0.6.0 mods only', async t => {
+  const f = await fixture(t);
+  const { id, a } = await network(f);
+  await f.staff('POST', `/v1/networks/${id}`, { inGameAdmin: true });
+  const now = (await f.mod(a.key, '/travel/beat', { players: [], maxPlayers: 60, world: 'x', terje: 'skills:v1', version: '0.6.0' })).body.network.settings;
+  assert.equal(now.inGameAdmin, true);
+  const old = (await f.mod(a.key, '/travel/beat', { players: [], maxPlayers: 60, world: 'x', terje: 'skills:v1', version: '0.5.0' })).body.network.settings;
+  assert.equal('inGameAdmin' in old, false);
+});
