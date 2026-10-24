@@ -19,5 +19,9 @@ export function readConfig(env = process.env, { requireToken = true } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('TRAVEL_PORT must be a port number.');
   // Behind a reverse proxy (Caddy, nginx), the client address for the failed-key limiter is the last X-Forwarded-For entry.
   const trustProxy = ['1', 'true', 'yes'].includes(String(env.TRAVEL_TRUST_PROXY ?? '').trim().toLowerCase());
-  return { mongoUrl, dbName, adminToken, host, port, trustProxy };
+  // The web console at /console. On unless switched off; it binds wherever the API binds.
+  const consoleSetting = String(env.TRAVEL_CONSOLE ?? '').trim().toLowerCase();
+  if (consoleSetting && !['1', 'true', 'yes', 'on', '0', 'false', 'no', 'off'].includes(consoleSetting)) throw new Error('TRAVEL_CONSOLE must be on or off (1 or 0).');
+  const consoleOn = !['0', 'false', 'no', 'off'].includes(consoleSetting);
+  return { mongoUrl, dbName, adminToken, host, port, trustProxy, console: consoleOn };
 }

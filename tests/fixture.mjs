@@ -8,13 +8,13 @@ import { createApi } from '../src/server.mjs';
 export const BASE = Date.parse('2026-10-20T12:00:00Z');
 export const MONGO_URL = process.env.TRAVEL_TEST_MONGO_URL || 'mongodb://127.0.0.1:27017';
 
-export async function fixture(t) {
+export async function fixture(t, { log = () => {}, config: extra = {} } = {}) {
   const client = new MongoClient(MONGO_URL, { serverSelectionTimeoutMS: 5000 });
   try { await client.connect(); } catch (error) { throw new Error(`The tests need a MongoDB at ${MONGO_URL} (set TRAVEL_TEST_MONGO_URL): ${error.message}`); }
   const dbName = `travel_test_${randomBytes(6).toString('hex')}`;
-  const config = { mongoUrl: MONGO_URL, dbName, adminToken: randomBytes(32).toString('base64url'), host: '127.0.0.1', port: 0, trustProxy: false };
+  const config = { mongoUrl: MONGO_URL, dbName, adminToken: randomBytes(32).toString('base64url'), host: '127.0.0.1', port: 0, trustProxy: false, ...extra };
   const clock = { now: BASE };
-  const api = await createApi(config, { now: () => clock.now, log: () => {}, client });
+  const api = await createApi(config, { now: () => clock.now, log, client });
   const { port } = await api.listen(0, '127.0.0.1');
   t.after(async () => { await api.close(); await client.db(dbName).dropDatabase(); await client.close(); });
   const base = `http://127.0.0.1:${port}`;

@@ -52,23 +52,8 @@ export async function runDoctor(env = process.env, { now = Date.now, timeoutMs =
   if (config) {
     const client = new MongoClient(config.mongoUrl, { serverSelectionTimeoutMS: timeoutMs, connectTimeoutMS: timeoutMs, appName: 'travel-admin doctor' });
     let db = null;
-    try {
-      await client.connect();
-      db = client.db(config.dbName);
-      await db.command({ ping: 1 });
-      const status = await db.command({ connectionStatus: 1 });
-      const users = (status?.authInfo?.authenticatedUsers ?? []).map(u => `${u.user}@${u.db}`);
-      let version = '';
-      try { version = (await db.admin().command({ buildInfo: 1 })).version ?? ''; } catch { version = ''; }
-      const on = `database ${config.dbName}${version ? `, MongoDB ${version}` : ''}`;
-      if (users.length) add('OK', 'mongodb', `connected as ${users.join(', ')}, ${on}`);
-      else add('WARN', 'mongodb', `connected without a user, so authentication is off. Turn it on (docs/mongodb-setup.md). ${on}`);
-    } catch (error) {
-      add('FAIL', 'mongodb', `cannot use ${config.dbName}: ${error.message}`);
-      db = null;
-    }
-
-    if (db) {
+    try { await client.connect(); db = client.db(config.dbName); } catch (error) { add('FAIL', 'mongodb', `cannot use ${config.dbName}: ${error.message}`); }
+    if (db && await checkMongo(db, config.dbName, add)) {
       try { await checkDatabase(db, add, now()); } catch (error) { add('FAIL', 'database', `could not read the travel records: ${error.message}`); }
     }
     await client.close().catch(() => {});
@@ -91,6 +76,38 @@ export async function runDoctor(env = process.env, { now = Date.now, timeoutMs =
   }
 
   return { results, failed: results.some(r => r.level === 'FAIL') };
+}
+
+// The doctor inside a running API, for GET /v1/overview, GET /v1/doctor and the console. The same checks on the API's
+// own database connection, except the HTTP one: the process answering is the API itself.
+export async function doctorInProcess({ db, config, now = Date.now, version = VERSION }) {
+  const results = [];
+  const add = (level, check, text) => results.push({ level, check, text });
+  add('OK', 'token', `admin token set (${config.adminToken.length} characters)`);
+  if (await checkMongo(db, config.dbName, add)) {
+    try { await checkDatabase(db, add, now()); } catch (error) { add('FAIL', 'database', `could not read the travel records: ${error.message}`); }
+  }
+  if (version !== VERSION) add('WARN', 'api', `this process runs ${version} and the files here are ${VERSION}. Restart the API to run ${VERSION}.`);
+  else add('OK', 'api', `this API process, version ${version}, is answering`);
+  return { results, failed: results.some(r => r.level === 'FAIL') };
+}
+
+// Reaches the database and says whether authentication is on. False when the database cannot be used.
+async function checkMongo(db, dbName, add) {
+  try {
+    await db.command({ ping: 1 });
+    const status = await db.command({ connectionStatus: 1 });
+    const users = (status?.authInfo?.authenticatedUsers ?? []).map(u => `${u.user}@${u.db}`);
+    let version = '';
+    try { version = (await db.admin().command({ buildInfo: 1 })).version ?? ''; } catch { version = ''; }
+    const on = `database ${dbName}${version ? `, MongoDB ${version}` : ''}`;
+    if (users.length) add('OK', 'mongodb', `connected as ${users.join(', ')}, ${on}`);
+    else add('WARN', 'mongodb', `connected without a user, so authentication is off. Turn it on (docs/mongodb-setup.md). ${on}`);
+    return true;
+  } catch (error) {
+    add('FAIL', 'mongodb', `cannot use ${dbName}: ${error.message}`);
+    return false;
+  }
 }
 
 async function checkDatabase(db, add, now) {
