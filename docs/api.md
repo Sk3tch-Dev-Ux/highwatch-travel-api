@@ -29,10 +29,12 @@ address (429) and an oversized body (413) keep their real status.
 | `GET /travel/snapshot/:id/:token` | | the snapshot text. The token is one-time per side; no key in the URL. |
 | `POST /travel/groups` | members `[{steamId, name}]` (1 to 4), to, route (optional), vehicle (bool) | a party trip: group, transfers `[{steamId, transferId}]`, vehicleTransferId and vehicleId when vehicle, partChars, partsMax. A refusal names the member in `who` and reserves nothing. From mod 0.6.0, on both ends. |
 | `POST /travel/groups/:group/cancel` | | calls the party trip off, committed members too, and puts their characters back home. Refused (`departed`) once the group is ready. |
+| `POST /travel/admin` | staff `{steamId, name}`, action, and the action's fields | the in-game admin panel (see below). Only with the network's `inGameAdmin` on. |
 
 Refusal codes: `notMember`, `notHome`, `transit`, `held`, `offline`, `closed`, `full`, `terje`, `lapsed`,
 `parts`, `length`, `claimed`, `notExpired`, `startServer`, `unknownServer`, `unknownRoute`, `routeClosed`,
-`cooldown`, `snapshot`, `upgrade`, `notReady`, `departed`, `noVehicles`. A refusal may name a party member in `who`.
+`cooldown`, `snapshot`, `upgrade`, `notReady`, `departed`, `noVehicles`, `adminOff`, `notYours`, `unknownAction`,
+`unknownCharacter`, `routes`. A refusal may name a party member in `who`.
 
 ### Parties and vehicles (mod 0.6.0)
 
@@ -43,6 +45,27 @@ destination sees none of the group until every transfer in it is committed: the 
 answers `groupReady: true`, and only then does the source send anyone. Arrivals to a 0.6.0 destination carry
 `group` and `kind` (`character` or `vehicle`). A member the destination never claims goes back to the source after
 the transit time, like a solo trip; the others keep their landing.
+
+### The in-game admin panel (mod 0.6.0)
+
+A member server's admins can set travel up from the game. The game server checks the staff member against its own
+`admins` list (`profiles/HighwatchTravel/config.json`) before it calls; the API checks the network allows it:
+`inGameAdmin`, which only the owner sets (`POST /v1/networks/:id {inGameAdmin: true}`, or
+`travel-admin network admin <network> on`). Off, every action answers `adminOff`. Every change is written to the
+audit (`GET /v1/networks/:id/audit`, `travel-admin network audit <network>`) with the staff member and the server,
+and character changes name them in the ledger.
+
+| Action | Fields | Answer |
+|---|---|---|
+| `overview` | | network, servers (with each one's mod `version`), routes, `me` (the calling server) |
+| `route.save` | route (the owner route body; `id` to update) | routes. The route must start or end on the calling server (`notYours`). |
+| `route.remove` | routeId | routes. Same rule. |
+| `member.open` | server, open | servers |
+| `network.startServer` | server ("" for any) | network |
+| `characters` | q, limit | characters |
+| `character` | steamId | character, its last 10 trips, held luggage |
+| `character.hold`, `character.release` | steamId, home (release only, optional) | character |
+| `send` | steamId, to | queuedOn |
 
 ### Timing the mod relies on
 

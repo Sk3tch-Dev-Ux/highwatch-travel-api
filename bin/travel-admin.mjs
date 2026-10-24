@@ -23,6 +23,8 @@ const HELP = `travel-admin <command>
   network list
   network show <network>
   network start-server <network> <server|none>   new characters must start there (none: anywhere)
+  network admin <network> <on|off>        let the game servers' admins set up travel from the in-game admin panel
+  network audit <network>                 what the in-game admin panel changed, newest first
   member add <network> <server> <address> <port> [label] [--closed]
   member remove <network> <server>
   route add <network> <route.json>        create, or update when the file has an "id"
@@ -80,6 +82,15 @@ if (group === 'doctor') {
       out(networks.length ? networks.map(show).join('\n\n') : 'No networks yet. Create one with: travel-admin network create <name>');
     } else if (group === 'network' && verb === 'show') {
       need(1, 'network show <network>'); await store.netOrFail(rest[0]); out(show(await store.network(rest[0])));
+    } else if (group === 'network' && verb === 'admin') {
+      need(2, 'network admin <network> <on|off>');
+      if (rest[1] !== 'on' && rest[1] !== 'off') throw new Error('Usage: travel-admin network admin <network> <on|off>');
+      const n = await store.settings(rest[0], { inGameAdmin: rest[1] === 'on' });
+      out(`In-game admin is ${n.network.settings.inGameAdmin ? 'on' : 'off'} for ${n.network.name}. Each game server's admins are the Steam64 ids in its profiles\\HighwatchTravel\\config.json "admins".`);
+    } else if (group === 'network' && verb === 'audit') {
+      need(1, 'network audit <network>');
+      const rows = await store.auditOf(rest[0], 100);
+      out(rows.length ? rows.map(a => `${a.at}  ${a.staffName || a.staffId} on ${a.server}  ${a.action}  ${JSON.stringify(a.detail)}`).join('\n') : 'No in-game admin changes yet.');
     } else if (group === 'network' && verb === 'start-server') {
       need(2, 'network start-server <network> <server|none>'); out(show(await store.settings(rest[0], { startServer: rest[1] === 'none' ? '' : rest[1] })));
     } else if (group === 'member' && verb === 'add') {

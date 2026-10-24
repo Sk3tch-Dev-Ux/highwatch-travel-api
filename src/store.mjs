@@ -66,7 +66,7 @@ export class TravelStore {
   constructor(db, { now = Date.now } = {}) {
     this.db = db; this.now = now;
     const c = name => db.collection(name);
-    this.c = { servers: c('servers'), networks: c('networks'), members: c('members'), characters: c('characters'), ledger: c('ledger'), transfers: c('transfers'), parts: c('parts'), queue: c('queue'), routes: c('routes'), held: c('held'), counters: c('counters') };
+    this.c = { servers: c('servers'), networks: c('networks'), members: c('members'), characters: c('characters'), ledger: c('ledger'), transfers: c('transfers'), parts: c('parts'), queue: c('queue'), routes: c('routes'), held: c('held'), counters: c('counters'), audit: c('audit') };
     // server id -> set of resolvers waiting on its inbox.
     this.waiters = new Map();
     this.tail = Promise.resolve();
@@ -94,6 +94,7 @@ export class TravelStore {
       c.queue.createIndex({ at: 1 }),
       c.routes.createIndex({ network: 1, createdAt: 1 }),
       c.held.createIndex({ network: 1, steamId: 1, _id: -1 }),
+      c.audit.createIndex({ network: 1, at: -1 }),
     ]);
     return this;
   }
@@ -586,6 +587,9 @@ export class TravelStore {
       if (s && !(await this.c.members.findOne({ _id: s, network: id }))) throw failure(400, 'The start server must be a member of this network.');
       cur.startServer = s;
     }
+    // In-game admin: the member servers' admins may set up routes, servers and characters from the game's admin panel.
+    // Only the network's owner turns it on (owner API or travel-admin), never a game server.
+    if (p?.inGameAdmin !== undefined) cur.inGameAdmin = p.inGameAdmin === true;
     await this.c.networks.updateOne({ _id: id }, { $set: { ...set, settings: cur } });
     return this.network(id);
   }
@@ -638,6 +642,82 @@ export class TravelStore {
     await this.setCharacter(id, steamId, c?.name ?? '', state, home, '', `${state === 'held' ? 'held' : 'set'} by ${clean(actor, 64) || 'Staff'}`);
     const now = await this.character(id, steamId);
     return { steamId: now.steamId, name: now.name, state: now.state, home: now.home, transfer: now.transfer, updatedAt: iso(now.updatedAt) };
+  }
+  // --- in-game admin --------------------------------------------------------------------------------
+  // The admin panel of a member server. The game server has checked `staff` against its own admin list; the network
+  // must have inGameAdmin on. Routes may only be changed when they start or end on the calling server. Every change
+  // goes to the audit collection with the staff member and the server.
+  async admin(server, p) {
+    const m = await this.membership(server.id);
+    const net = await this.c.networks.findOne({ _id: m.network });
+    if (net?.settings?.inGameAdmin !== true) throw failure(409, 'In-game admin is off for this network. The network owner turns it on with travel-admin network admin <network> on.', 'adminOff');
+    const staffId = str(p?.staff?.steamId), staffName = clean(p?.staff?.name, 64);
+    if (!STEAM64.test(staffId)) throw failure(400, 'Name the staff member (Steam64).');
+    const actor = `${staffName || staffId} on ${(await this.serverView(m)).name}`;
+    const id = m.network;
+    const audit = async (action, detail) => this.c.audit.insertOne({ _id: await this.next('audit'), network: id, server: server.id, staffId, staffName, action, detail, at: this.now() });
+    const ownRoute = async routeId => {
+      const r = await this.route(id, str(routeId));
+      if (!r) throw failure(404, 'Unknown route.', 'unknownRoute');
+      if (r.from !== server.id && r.to !== server.id) throw failure(409, 'Change this route from one of its own servers.', 'notYours');
+      return r;
+    };
+    const action = str(p?.action);
+    if (action === 'overview') {
+      const n = await this.network(id);
+      const servers = [];
+      for (const mem of await this.c.members.find({ network: id }).sort({ label: 1, _id: 1 }).toArray()) servers.push({ ...(await this.serverView(mem)), version: str(mem.beat?.version) });
+      return { network: n.network, servers, routes: n.routes, me: server.id };
+    }
+    if (action === 'route.save') {
+      const body = p?.route ?? {};
+      if (body.from !== server.id && body.to !== server.id) throw failure(409, 'A route set up here must start or end on this server.', 'notYours');
+      if (body.id) await ownRoute(body.id);
+      const out = await this.saveRoute(id, body);
+      await audit('route.save', { route: body.id || out.routes.at(-1)?.id || '', name: clean(body.name, 48) });
+      return { routes: out.routes };
+    }
+    if (action === 'route.remove') {
+      const r = await ownRoute(p?.routeId);
+      const out = await this.removeRoute(id, r.id);
+      await audit('route.remove', { route: r.id, name: r.name });
+      return { routes: out.routes };
+    }
+    if (action === 'member.open') {
+      const mem = await this.c.members.findOne({ _id: str(p?.server), network: id });
+      if (!mem) throw failure(404, 'That server is not in this network.', 'unknownServer');
+      await this.c.members.updateOne({ _id: mem._id }, { $set: { open: p?.open === true } });
+      await audit('member.open', { server: mem._id, open: p?.open === true });
+      return { servers: (await this.network(id)).servers };
+    }
+    if (action === 'network.startServer') {
+      const out = await this.settings(id, { startServer: str(p?.server) });
+      await audit('network.startServer', { server: str(p?.server) });
+      return { network: out.network };
+    }
+    if (action === 'characters') return { characters: (await this.characters(id, { q: str(p?.q), limit: Math.min(100, Number(p?.limit) || 50) })).characters };
+    if (action === 'character') {
+      if (!STEAM64.test(str(p?.steamId))) throw failure(400, 'Invalid Steam64.');
+      const c = await this.character(id, p.steamId);
+      if (!c) throw failure(404, 'The network has never seen this character.', 'unknownCharacter');
+      const h = await this.history(id, p.steamId);
+      return { character: { steamId: c.steamId, name: c.name, state: c.state, home: c.home, transfer: c.transfer, updatedAt: iso(c.updatedAt) }, trips: h.transfers.slice(0, 10), held: h.held.slice(0, 50) };
+    }
+    if (action === 'character.hold' || action === 'character.release') {
+      const out = await this.setState(id, str(p?.steamId), { state: action === 'character.hold' ? 'held' : 'home', home: str(p?.home) }, actor);
+      await audit(action, { steamId: str(p?.steamId), home: out.home });
+      return { character: out };
+    }
+    if (action === 'send') {
+      const out = await this.send(id, str(p?.steamId), str(p?.to), actor);
+      await audit('send', { steamId: str(p?.steamId), to: str(p?.to) });
+      return out;
+    }
+    throw failure(400, 'Unknown admin action.', 'unknownAction');
+  }
+  async auditOf(id, limit = 100) {
+    await this.netOrFail(id);
+    return (await this.c.audit.find({ network: id }).sort({ _id: -1 }).limit(Math.min(500, limit)).toArray()).map(a => ({ id: a._id, server: a.server, staffId: a.staffId, staffName: a.staffName, action: a.action, detail: a.detail, at: iso(a.at) }));
   }
   async saveRoute(id, p) {
     await this.netOrFail(id);

@@ -116,7 +116,7 @@ export async function createApi(config, { now = Date.now, log = console.error, c
         if (!TRANSFER_ID.test(snap[1]) || !TOKEN.test(snap[2])) throw failure(404, 'Unknown snapshot.');
         finish(200, await store.snapshot(snap[1], snap[2]), 'application/json'); return;
       }
-      const travel = /^\/travel\/(beat|inbox|ledger|quote|home|chat|transfers|groups)(?:\/([a-f0-9]{24})\/(part|commit|cancel|reclaim|land))?$/.exec(p);
+      const travel = /^\/travel\/(beat|inbox|ledger|quote|home|chat|transfers|groups|admin)(?:\/([a-f0-9]{24})\/(part|commit|cancel|reclaim|land))?$/.exec(p);
       if (travel && req.method === 'POST') {
         const [, verb, tid, step] = travel;
         if (tid && verb !== 'transfers' && !(verb === 'groups' && step === 'cancel')) throw failure(404, 'Not found.');
@@ -133,6 +133,7 @@ export async function createApi(config, { now = Date.now, log = console.error, c
             if (verb === 'home') return store.claimHome(srv, payload);
             if (verb === 'chat') return store.chat(srv, payload);
             if (verb === 'groups') return tid ? store.cancelGroup(srv, tid) : store.reserveGroup(srv, payload);
+            if (verb === 'admin') return store.admin(srv, payload);
             if (!tid) return store.reserve(srv, payload);
             if (step === 'part') return store.part(srv, tid, payload);
             if (step === 'commit') return store.commit(srv, tid, payload);
@@ -159,7 +160,7 @@ export async function createApi(config, { now = Date.now, log = console.error, c
       }
       if (p === '/v1/networks' && req.method === 'GET') { admin(req); send(200, await store.networks()); return; }
       if (p === '/v1/networks' && req.method === 'POST') { admin(req); const b = await jsonBody(req, 2048); send(201, await store.serial(() => store.createNetwork(b))); return; }
-      const net = /^\/v1\/networks\/([a-f0-9]{16})(?:\/(members|characters|send|routes)(?:\/([a-f0-9]{16}|\d{17}|[a-f0-9]{8}))?)?$/.exec(p);
+      const net = /^\/v1\/networks\/([a-f0-9]{16})(?:\/(members|characters|send|routes|audit)(?:\/([a-f0-9]{16}|\d{17}|[a-f0-9]{8}))?)?$/.exec(p);
       if (net) {
         admin(req);
         const [, nid, part, item] = net;
@@ -174,6 +175,7 @@ export async function createApi(config, { now = Date.now, log = console.error, c
         if (part === 'send' && !item && req.method === 'POST') { const b = await jsonBody(req, 1024); send(200, await store.serial(() => store.send(nid, String(b?.steamId ?? ''), String(b?.to ?? ''), actor))); return; }
         if (part === 'routes' && !item && req.method === 'POST') { const b = await jsonBody(req, 4096); send(200, await store.serial(() => store.saveRoute(nid, b))); return; }
         if (part === 'routes' && item && req.method === 'DELETE') { send(200, await store.serial(() => store.removeRoute(nid, item))); return; }
+        if (part === 'audit' && !item && req.method === 'GET') { send(200, { audit: await store.auditOf(nid, integer(url.searchParams.get('limit'), 100, 1, 500)) }); return; }
         throw failure(404, 'Not found.');
       }
       throw failure(404, 'Not found.');
