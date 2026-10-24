@@ -11,6 +11,10 @@ too.
 **Where.** On the same machine as the API is simplest and safest: MongoDB then only listens on 127.0.0.1 and is
 never reachable from the internet. Keep it that way unless you know why you need otherwise.
 
+On Windows, `scripts\windows\install.ps1` does everything on this page for you: installs MongoDB, creates both
+users with random passwords, turns authentication on and writes the connection string to `.env`
+([scripts/windows/README.md](../scripts/windows/README.md)). The steps below are the same work by hand.
+
 Pick one path:
 - [Windows](#windows)
 - [Linux (Ubuntu or Debian)](#linux-ubuntu-or-debian)
@@ -212,6 +216,10 @@ Run the dump every night (Task Scheduler on Windows, cron on Linux) and keep a w
 the database's own disk. A restored backup brings the ledger back to the moment of the dump: a character that
 travelled after it may be listed on the server it left. Check the latest trips (`travel-admin character list`)
 after a restore.
+
+On Windows, `scripts\windows\backup.ps1` does the nightly dump with the travel user from `.env`, which may read and
+write its own database and so can dump and restore it. `install.ps1 -RegisterBackup` schedules it for 04:00, and
+`restore.ps1` puts a backup back ([scripts/windows/README.md](../scripts/windows/README.md#backups)).
 
 ## Looking at the data
 

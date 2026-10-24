@@ -4,3 +4,7 @@ node_modules/
 .DS_Store
 # mongodump output, if you back up into the repo folder
 dump/
+# API logs from scripts/windows/run-api.ps1
+logs/
+# install.ps1 writes new passwords here; move them to a password manager and delete the file
+scripts/windows/secrets-*.txt

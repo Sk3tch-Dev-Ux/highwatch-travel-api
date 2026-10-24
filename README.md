@@ -32,6 +32,10 @@ header; the protocol is in [docs/api.md](docs/api.md).
 
 ## Install
 
+**On Windows**, one script does all of this, including MongoDB, its users, `.env` and starting at boot:
+[scripts/windows/README.md](scripts/windows/README.md). Endfall's go-live checklist, from a cold start to the first
+trip, is [docs/endfall-install-plan.md](docs/endfall-install-plan.md). By hand, on any system:
+
 1. **Set up MongoDB** with its two users and authentication on: [docs/mongodb-setup.md](docs/mongodb-setup.md).
    Keep the travel user's connection string.
 
@@ -120,9 +124,9 @@ things are in the owner API ([docs/api.md](docs/api.md)), for scripts and, later
 
 ## Keep it running
 
-**Windows:** run `npm start` from a Task Scheduler task set to start at boot, run whether the user is logged on or
-not, and restart on failure. Or install it as a service with NSSM (https://nssm.cc): program `node`, arguments
-`--env-file=.env src/server.mjs`, start-up folder the repository folder.
+**Windows:** `scripts\windows\install.ps1` registers a Task Scheduler task that starts the API at boot as SYSTEM,
+starts it again whenever it stops, and writes its output to `logspi-<date>.log` (14 days kept). NSSM works too.
+Both are in [scripts/windows/README.md](scripts/windows/README.md).
 
 **Linux (systemd):** `/etc/systemd/system/highwatch-travel.service`:
 
@@ -149,7 +153,19 @@ on one database stay safe (MongoDB still lets only one claim win), but game serv
 ## Back up
 
 The database is the only copy of the ledger and of every character in transit. Back it up every night:
-[docs/mongodb-setup.md, Backups](docs/mongodb-setup.md#backups).
+[docs/mongodb-setup.md, Backups](docs/mongodb-setup.md#backups). On Windows, `scripts\windows\backup.ps1` and
+`restore.ps1` do it, and `install.ps1 -RegisterBackup` runs the backup at 04:00 every night.
+
+## Check it
+
+```sh
+npm run admin -- doctor
+```
+
+One line per check, `OK`, `WARN` or `FAIL`: MongoDB reachable and signed in, the indexes, the admin token's format,
+each server's last beat and mod version, routes that use a server outside their network, trips past their transit
+time, and the API answering on its port. It only reads. It exits with 1 when a check fails, so a monitoring task
+can run it.
 
 ## Update
 
