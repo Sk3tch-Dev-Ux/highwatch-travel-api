@@ -140,7 +140,7 @@ Keys, tokens and bodies are still never logged.
 | `POST /v1/networks/:id/members` `{server, address, port, label?, open?}` | adds a server, or changes it. `address` and `port` are what players connect to. `open: false` closes it to arrivals. |
 | `DELETE /v1/networks/:id/members/:server` | removes it, unless a trip is on its way to or from it |
 | `GET /v1/networks/:id/characters?q=&limit=` | characters, newest change first |
-| `GET /v1/networks/:id/characters/:steam64` | one character (`character`, null when never seen), its ledger, trips and held items |
+| `GET /v1/networks/:id/characters/:steam64` | one character (`character`, null when never seen), its ledger, trips and held items. A party vehicle the destination could not place is held under the group's vehicle id and shows on every member's record with `vehicle: true` and its `group`. |
 | `POST /v1/networks/:id/characters/:steam64` `{state: "held"\|"home", home?}` | holds it, releases it, or moves its home (never while travelling) |
 | `POST /v1/networks/:id/send` `{steamId, to}` | a staff send: the home server runs the trip, with no route rules |
 | `POST /v1/networks/:id/routes` `{...route}` | creates a route, or updates it when the body has its `id` |
