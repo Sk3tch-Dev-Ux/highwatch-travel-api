@@ -666,11 +666,15 @@ export class TravelStore {
     if (!STEAM64.test(str(steamId))) throw refuse(400, 'Invalid Steam64.', 'invalid', 'steamId');
     // The character's own record too (null when the network never saw it), so one call is enough for a detail page.
     const c = await this.character(id, steamId);
+    const transfers = await this.c.transfers.find({ network: id, steamId }).sort({ createdAt: -1 }).limit(50).toArray();
+    // A party's vehicle travels under the group's vehicle id (v<group>) and has no character of its own, so a vehicle
+    // the destination could not place is held under that id. Every member of the party sees it on their own record.
+    const vehicleIds = [...new Set(transfers.filter(t => t.group).map(t => `v${t.group}`))];
     return {
       character: c ? { steamId: c.steamId, name: c.name, state: c.state, home: c.home, transfer: c.transfer, updatedAt: iso(c.updatedAt) } : null,
       ledger: (await this.c.ledger.find({ network: id, steamId }).sort({ seq: -1 }).limit(100).toArray()).map(r => ({ state: r.state, home: r.home, to: r.toServer, reason: r.reason, at: iso(r.at) })),
-      transfers: (await this.c.transfers.find({ network: id, steamId }).sort({ createdAt: -1 }).limit(50).toArray()).map(t => ({ id: t._id, from: t.fromServer, to: t.toServer, route: t.route ?? '', state: t.state, createdAt: iso(t.createdAt), committedAt: iso(t.committedAt), expiresAt: iso(t.expiresAt), settledAt: iso(t.settledAt), settledBy: t.settledBy, length: t.length, sha256: t.sha256, reason: t.reason })),
-      held: (await this.c.held.find({ network: id, steamId }).sort({ _id: -1 }).limit(200).toArray()).map(h => ({ id: h._id, transfer: h.transfer, server: h.server, className: h.className, count: h.count, at: iso(h.at), releasedAt: iso(h.releasedAt) })),
+      transfers: transfers.map(t => ({ id: t._id, from: t.fromServer, to: t.toServer, route: t.route ?? '', state: t.state, createdAt: iso(t.createdAt), committedAt: iso(t.committedAt), expiresAt: iso(t.expiresAt), settledAt: iso(t.settledAt), settledBy: t.settledBy, length: t.length, sha256: t.sha256, reason: t.reason })),
+      held: (await this.c.held.find({ network: id, steamId: { $in: [steamId, ...vehicleIds] } }).sort({ _id: -1 }).limit(200).toArray()).map(h => ({ id: h._id, transfer: h.transfer, server: h.server, className: h.className, count: h.count, at: iso(h.at), releasedAt: iso(h.releasedAt), vehicle: h.steamId !== steamId, group: h.steamId !== steamId ? h.steamId.slice(1) : '' })),
     };
   }
   // Staff hold or release a character, or move its home (only while it is not travelling).
@@ -744,7 +748,7 @@ export class TravelStore {
       const c = await this.character(id, p.steamId);
       if (!c) throw failure(404, 'The network has never seen this character.', 'unknownCharacter');
       const h = await this.history(id, p.steamId);
-      return { character: { steamId: c.steamId, name: c.name, state: c.state, home: c.home, transfer: c.transfer, updatedAt: iso(c.updatedAt) }, trips: h.transfers.slice(0, 10), held: h.held.slice(0, 50) };
+      return { character: { steamId: c.steamId, name: c.name, state: c.state, home: c.home, transfer: c.transfer, updatedAt: iso(c.updatedAt) }, trips: h.transfers.slice(0, 10), held: h.held.slice(0, 50).map(({ vehicle, group, ...x }) => x) };
     }
     if (action === 'character.hold' || action === 'character.release') {
       const out = await this.setState(id, str(p?.steamId), { state: action === 'character.hold' ? 'held' : 'home', home: str(p?.home) }, actor);

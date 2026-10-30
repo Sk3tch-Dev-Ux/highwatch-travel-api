@@ -26,7 +26,7 @@ const party = [{ steamId: LEAD, name: 'Lead' }, { steamId: TWO, name: 'Two' }, {
 
 test('a party with a vehicle: reserved together, shown to the destination only when all are committed, landed each', async t => {
   const f = await fixture(t);
-  const { a, b } = await network(f);
+  const { id, a, b } = await network(f);
   const r = (await f.mod(a.key, '/travel/groups', { members: party, to: b.id, vehicle: true })).body;
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.transfers.length, 3);
@@ -47,10 +47,16 @@ test('a party with a vehicle: reserved together, shown to the destination only w
   assert.ok(arrivals.every(x => x.group === r.group));
   assert.deepEqual(arrivals.map(x => x.kind).sort(), ['character', 'character', 'character', 'vehicle']);
 
-  // Each lands on its own claim; the vehicle has no ledger row.
-  for (const x of arrivals) assert.equal((await f.mod(b.key, `/travel/transfers/${x.transferId}/land`, {})).body.ok, true);
+  // Each lands on its own claim; the vehicle has no ledger row. The destination could not place the vehicle, so it
+  // is held under the group's vehicle id, and every member of the party sees it on their own record.
+  for (const x of arrivals) assert.equal((await f.mod(b.key, `/travel/transfers/${x.transferId}/land`, x.kind === 'vehicle' ? { held: ['Boat_01_Orange'] } : {})).body.ok, true);
   for (const s of [LEAD, TWO, THREE]) assert.equal((await f.mod(b.key, '/travel/ledger', { steamId: s })).body.home, b.id);
   assert.equal(await f.api.store.c.characters.countDocuments({ steamId: r.vehicleId }), 0);
+  for (const s of [LEAD, TWO, THREE]) {
+    const held = (await f.staff('GET', `/v1/networks/${id}/characters/${s}`)).body.held;
+    assert.deepEqual(held.map(h => [h.className, h.count, h.vehicle, h.group]), [['Boat_01_Orange', 1, true, r.group]], `${s} sees the party's vehicle`);
+  }
+  assert.deepEqual((await f.staff('GET', `/v1/networks/${id}/characters/76561198012039999`)).body.held, [], 'a stranger does not');
 });
 
 test('a party is all or nothing: a refusal names the member and writes nothing', async t => {
