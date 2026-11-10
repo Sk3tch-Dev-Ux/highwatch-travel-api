@@ -52,7 +52,7 @@ test('the vanilla example is the four maps, every pair connected, closed, and st
   }
   // No start server on a DLC map: an account without the DLC could never join where it is sent.
   assert.equal(net.startServer, '');
-  assert.match(problems(net).join('\n'), /no address/);
+  assert.deepEqual(problems(net), ['"address" is not set. Set it to the public IP or host name players connect to, the same one as in the DayZ launcher.'], 'said once, not once per server');
   const f = await fixture(t);
   const { file } = workdir(t);
   const r = await run(f, [file]);
@@ -133,7 +133,7 @@ test('a file with mistakes is refused whole, with every mistake named', () => {
   const wrong = problems({ network: '', address: 'SET_ME', startServer: 'Namalsk', admins: ['me'], servers: [{ name: 'Chernarus', port: 2302 }, { name: 'chernarus', port: 2302 }, { name: 'Sakhal', port: 0, address: '10.0.0.5', landingPoints: ['here'] }],
     routes: [{ name: 'Loop', from: 'Sakhal', to: 'Sakhal' }, { name: 'Nowhere', from: 'Chernarus', to: 'Livonia' }] });
   const text = wrong.join('\n');
-  for (const part of ['"network" is missing', 'Two servers are called chernarus', 'Chernarus: no address', 'Sakhal: "port" must be', 'landing point "here"', 'Route Loop: it goes from Sakhal to itself', 'Route Nowhere: "to" is "Livonia"', '"startServer" is Namalsk', 'me is not a Steam64 id']) assert.ok(text.includes(part), `${part}\n---\n${text}`);
+  for (const part of ['"network" is missing', 'Two servers are called chernarus', '"address" is not set', 'Sakhal: "port" must be', 'landing point "here"', 'Route Loop: it goes from Sakhal to itself', 'Route Nowhere: "to" is "Livonia"', '"startServer" is Namalsk', 'me is not a Steam64 id']) assert.ok(text.includes(part), `${part}\n---\n${text}`);
   assert.deepEqual(problems({ network: 'N', address: '10.0.0.1', servers: [{ name: 'A', port: 2302 }, { name: 'B', port: 2402 }], routes: [{ name: 'Go', from: 'A', to: 'B' }, { name: 'Back', from: 'B', to: 'A' }] }), []);
   assert.match(problems({ network: 'N', address: '10.0.0.1', servers: [{ name: 'A', port: 2302 }, { name: 'B', port: 2302 }] }).join('\n'), /share 10\.0\.0\.1:2302/);
 });

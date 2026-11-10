@@ -67,6 +67,8 @@ export function problems(net) {
   const servers = Array.isArray(net.servers) ? net.servers : [];
   if (!servers.length) out.push('"servers" lists no servers.');
   const names = new Set();
+  const top = String(net.address ?? '').trim();
+  let unaddressed = 0;
   for (const s of servers) {
     const name = nameOf(s);
     if (!name) { out.push('A server has no "name".'); continue; }
@@ -74,10 +76,12 @@ export function problems(net) {
     names.add(name.toLowerCase());
     if (!/^[A-Za-z0-9 _.-]+$/.test(name)) out.push(`${name}: use letters, digits, spaces, dots, dashes and underscores in a server's name (it names its config file).`);
     if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) out.push(`${name}: "port" must be the game port players connect to.`);
-    const address = String(s.address ?? net.address ?? '').trim();
-    if (!address || address === 'SET_ME') out.push(`${name}: no address. Set "address" to the public IP or host name players connect to.`);
+    const own = String(s.address ?? '').trim();
+    if (own === 'SET_ME') out.push(`${name}: its "address" still says SET_ME.`);
+    else if (!own && (!top || top === 'SET_ME')) unaddressed++;
     for (const p of s.landingPoints ?? []) if (!/^-?\d+(\.\d+)? -?\d+(\.\d+)?$/.test(String(p))) out.push(`${name}: landing point "${p}" must be "x z" in metres.`);
   }
+  if (unaddressed) out.push('"address" is not set. Set it to the public IP or host name players connect to, the same one as in the DayZ launcher.');
   const ports = new Map();
   for (const s of servers) {
     const key = `${String(s.address ?? net.address ?? '').trim()}:${s.port}`;
