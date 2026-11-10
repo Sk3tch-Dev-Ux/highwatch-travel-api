@@ -1,0 +1,28 @@
+{
+  "network": "Vanilla",
+  "address": "SET_ME",
+  "endpoint": "http://127.0.0.1:6070",
+  "note": "The four vanilla maps on one machine. Set address to the public IP or host name players connect to; setup-network.mjs stops while it says SET_ME. Change network to your community's name and the ports to your servers' game ports. Every map has one hub, and a route to each other map that lands at that map's hub. Routes start closed (enabled false) and are opened after the staff test trip. Sakhal needs the Frostline DLC and Nasdara the Badlands DLC: keep startServer empty, or name Chernarus or Livonia. docs/vanilla-install-plan.md is the checklist.",
+  "admins": [],
+  "startServer": "",
+  "servers": [
+    { "name": "Chernarus", "port": 2302, "landingPoints": ["12989 10225"] },
+    { "name": "Livonia", "port": 2402, "landingPoints": ["1640 7470"] },
+    { "name": "Sakhal", "port": 2502, "landingPoints": ["7868 7750"] },
+    { "name": "Nasdara", "port": 2602, "landingPoints": ["10327 4310"] }
+  ],
+  "routes": [
+    { "name": "To Livonia", "code": "LV", "from": "Chernarus", "to": "Livonia", "terminal": { "x": 12989, "z": 10244, "radius": 60, "label": "Berezino station" }, "landing": { "x": 1640, "z": 7470, "radius": 40, "label": "Topolin station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Sakhal", "code": "SK", "from": "Chernarus", "to": "Sakhal", "terminal": { "x": 12989, "z": 10244, "radius": 60, "label": "Berezino station" }, "landing": { "x": 7868, "z": 7750, "radius": 40, "label": "Nogovo bus station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Nasdara", "code": "ND", "from": "Chernarus", "to": "Nasdara", "terminal": { "x": 12989, "z": 10244, "radius": 60, "label": "Berezino station" }, "landing": { "x": 10327, "z": 4310, "radius": 40, "label": "Nasdara bus station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Chernarus", "code": "CH", "from": "Livonia", "to": "Chernarus", "terminal": { "x": 1640, "z": 7470, "radius": 60, "label": "Topolin station" }, "landing": { "x": 12989, "z": 10225, "radius": 40, "label": "Berezino station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Sakhal", "code": "SK", "from": "Livonia", "to": "Sakhal", "terminal": { "x": 1640, "z": 7470, "radius": 60, "label": "Topolin station" }, "landing": { "x": 7868, "z": 7750, "radius": 40, "label": "Nogovo bus station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Nasdara", "code": "ND", "from": "Livonia", "to": "Nasdara", "terminal": { "x": 1640, "z": 7470, "radius": 60, "label": "Topolin station" }, "landing": { "x": 10327, "z": 4310, "radius": 40, "label": "Nasdara bus station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Chernarus", "code": "CH", "from": "Sakhal", "to": "Chernarus", "terminal": { "x": 7868, "z": 7750, "radius": 60, "label": "Nogovo bus station" }, "landing": { "x": 12989, "z": 10225, "radius": 40, "label": "Berezino station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Livonia", "code": "LV", "from": "Sakhal", "to": "Livonia", "terminal": { "x": 7868, "z": 7750, "radius": 60, "label": "Nogovo bus station" }, "landing": { "x": 1640, "z": 7470, "radius": 40, "label": "Topolin station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Nasdara", "code": "ND", "from": "Sakhal", "to": "Nasdara", "terminal": { "x": 7868, "z": 7750, "radius": 60, "label": "Nogovo bus station" }, "landing": { "x": 10327, "z": 4310, "radius": 40, "label": "Nasdara bus station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Chernarus", "code": "CH", "from": "Nasdara", "to": "Chernarus", "terminal": { "x": 10327, "z": 4310, "radius": 60, "label": "Nasdara bus station" }, "landing": { "x": 12989, "z": 10225, "radius": 40, "label": "Berezino station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Livonia", "code": "LV", "from": "Nasdara", "to": "Livonia", "terminal": { "x": 10327, "z": 4310, "radius": 60, "label": "Nasdara bus station" }, "landing": { "x": 1640, "z": 7470, "radius": 40, "label": "Topolin station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false },
+    { "name": "To Sakhal", "code": "SK", "from": "Nasdara", "to": "Sakhal", "terminal": { "x": 10327, "z": 4310, "radius": 60, "label": "Nasdara bus station" }, "landing": { "x": 7868, "z": 7750, "radius": 40, "label": "Nogovo bus station" }, "cooldownMin": 30, "waitSeconds": 10, "enabled": false }
+  ]
+}

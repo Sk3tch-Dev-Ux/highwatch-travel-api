@@ -2,7 +2,7 @@
 
 The service behind **Highwatch Travel**: one DayZ character across a network of servers. Your players move their
 character, with its gear and its Terje progress, from one of your servers to another, and the character lives on
-exactly one server at a time.
+exactly one server at a time. Vanilla servers work too: from mod 0.8.0 Travel needs no other mod.
 
 This API is the network's memory. It holds the **ledger** of where every character lives, the snapshot of every
 character in transit, the routes players can take, and each server's key. Every game server in the network runs the
@@ -28,13 +28,16 @@ header; the protocol is in [docs/api.md](docs/api.md).
 - **Node.js 22.9 or newer** (https://nodejs.org, or `winget install OpenJS.NodeJS.LTS`).
 - **MongoDB 8.0 or newer.** Setup, step by step: [docs/mongodb-setup.md](docs/mongodb-setup.md). Or use
   `compose.yaml`, which runs MongoDB and the API together in Docker.
-- The **@Highwatch-Travel** mod on every game server in the network, on the same version everywhere.
+- The **@Highwatch-Travel** mod on every game server in the network, on the same version everywhere. It is a client
+  and server mod, so players load it too. On servers without Community Framework and Terje it must be 0.8.0 or newer.
 
 ## Install
 
 **On Windows**, one script does all of this, including MongoDB, its users, `.env` and starting at boot:
-[scripts/windows/README.md](scripts/windows/README.md). Endfall's go-live checklist, from a cold start to the first
-trip, is [docs/endfall-install-plan.md](docs/endfall-install-plan.md). By hand, on any system:
+[scripts/windows/README.md](scripts/windows/README.md). Two go-live checklists go from a cold start to the first
+trip: [docs/vanilla-install-plan.md](docs/vanilla-install-plan.md) for the four vanilla maps (Chernarus, Livonia,
+Sakhal, Nasdara) with no other mod, and [docs/endfall-install-plan.md](docs/endfall-install-plan.md), Endfall's. By
+hand, on any system:
 
 1. **Set up MongoDB** with its two users and authentication on: [docs/mongodb-setup.md](docs/mongodb-setup.md).
    Keep the travel user's connection string.
@@ -79,6 +82,13 @@ you need no proxy.
 The **console** in your browser does all of this (next section). `npm run admin -- <command>` does it from the
 command line, on the database directly (`npm run admin -- help` lists every command). The same things are in the
 owner API ([docs/api.md](docs/api.md), [docs/openapi.yaml](docs/openapi.yaml)), for scripts.
+
+**Or all at once, from one file.** `npm run setup -- <network file>` does steps 1 to 5 below through the running
+API: it registers the servers, makes the network, adds the members and the routes, and writes each game server's
+`config.json` with its key into a `config` folder beside the file, so no key is ever printed.
+[examples/vanilla/network.json](examples/vanilla/network.json) is a whole network file, the four vanilla maps with a
+route between every pair; the header of [scripts/setup-network.mjs](scripts/setup-network.mjs) describes the format.
+It is safe to run again after you edit the file.
 
 1. **Add each game server.** The key is shown once: copy it now.
 
